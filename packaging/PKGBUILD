@@ -1,0 +1,28 @@
+pkgname=the-wizard
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Hyprland hotkey + gamescope Steam couch mode helper (Omarchy/Arch)"
+arch=('any')
+url="https://github.com/REPLACE_ME/the-wizard"
+license=('MIT')
+depends=('bash')
+optdepends=(
+  'steam: Steam client'
+  'gamescope: gamescope micro-compositor'
+  'hyprland: Hyprland compositor (for keybind integration)'
+  'python: used to parse monitor resolution from hyprctl JSON'
+  'jq: used by some Omarchy default binds (optional)'
+)
+install="${pkgname}.install"
+
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  install -d "${pkgdir}/usr/share/${pkgname}"
+  cp -a scripts "${pkgdir}/usr/share/${pkgname}/"
+
+  install -Dm755 "bin/the-wizard" "${pkgdir}/usr/bin/the-wizard"
+}
+
+

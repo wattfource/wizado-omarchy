@@ -1,0 +1,24 @@
+# PKGBUILD template (NOT functional yet)
+#
+# This is a starting point for publishing to AUR later.
+# When you're ready, we'll replace this template with a real PKGBUILD, .SRCINFO,
+# and proper install/remove/update behavior that matches your scripts.
+
+pkgname=the-wizard
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="The Wizard (Steam launcher helper) - installer scaffold"
+arch=('any')
+url="https://example.com"
+license=('custom')
+depends=('bash')
+source=()
+sha256sums=()
+
+package() {
+  install -d "${pkgdir}/usr/share/${pkgname}"
+  # install -Dm755 scripts/setup.sh "${pkgdir}/usr/share/${pkgname}/setup.sh"
+  # install -Dm755 scripts/update.sh "${pkgdir}/usr/share/${pkgname}/update.sh"
+  # install -Dm755 scripts/remove.sh "${pkgdir}/usr/share/${pkgname}/remove.sh"
+}
+

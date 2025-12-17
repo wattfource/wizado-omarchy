@@ -1,0 +1,1664 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Convenience wrapper: run the real installer in scripts/.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/setup.sh" "$@"
+
+TARGET_DIR="$HOME/.local/share/steam-launcher"
+SWITCH_BIN="$TARGET_DIR/enter-gamesmode"
+RETURN_BIN="$TARGET_DIR/leave-gamesmode"
+
+# Try to find the user's bindings config file
+BINDINGS_CONFIG=""
+for location in \
+    "$HOME/.config/hypr/bindings.conf" \
+    "$HOME/.config/hypr/keybinds.conf" \
+    "$HOME/.config/hypr/hyprland.conf"; do
+  if [ -f "$location" ]; then
+    BINDINGS_CONFIG="$location"
+    break
+  fi
+done
+
+CONFIG_FILE="/etc/gaming-mode.conf"
+[[ -f "$HOME/.gaming-mode.conf" ]] && CONFIG_FILE="$HOME/.gaming-mode.conf"
+# shellcheck source=/dev/null
+source "$CONFIG_FILE" 2>/dev/null || true
+# Set defaults for any unset variables (works even if config partially defines them)
+: "${STEAM_LAUNCH_MODE:=bigpicture}"
+: "${PERFORMANCE_MODE:=enabled}"
+
+ADDED_BINDINGS=0
+CREATED_TARGET_DIR=0
+NEEDS_RELOGIN=0
+
+info(){ echo "[*] $*"; }
+err(){ echo "[!] $*" >&2; }
+
+die() {
+  local msg="$1"; local code="${2:-1}"
+  echo "FATAL: $msg" >&2
+  logger -t gaming-mode "Installation failed: $msg"
+  rollback_changes
+  exit "$code"
+}
+
+rollback_changes() {
+  [ -f "$SWITCH_BIN" ] && rm -f "$SWITCH_BIN"
+  [ -f "$RETURN_BIN" ] && rm -f "$RETURN_BIN"
+  if [ "$CREATED_TARGET_DIR" -eq 1 ] && [ -d "$TARGET_DIR" ]; then
+    rmdir "$TARGET_DIR" 2>/dev/null || true
+  fi
+
+  # Remove added bindings
+  if [ "$ADDED_BINDINGS" -eq 1 ] && [ -n "$BINDINGS_CONFIG" ] && [ -f "$BINDINGS_CONFIG" ]; then
+    sed -i '/# Gaming Mode bindings - added by installation script/,/# End Gaming Mode bindings/d' "$BINDINGS_CONFIG"
+  fi
+}
+
+validate_environment() {
+  command -v pacman  >/dev/null || die "pacman required"
+  command -v hyprctl >/dev/null || die "hyprctl required"
+  [ -n "$BINDINGS_CONFIG" ] || die "Could not find bindings config file (checked bindings.conf, keybinds.conf, hyprland.conf)"
+  [ -f "$BINDINGS_CONFIG" ] || die "Bindings config file not found: $BINDINGS_CONFIG"
+  # Verify Hyprland is actually configured (check if any hypr config exists)
+  [ -d "$HOME/.config/hypr" ] || die "Hyprland config directory not found (~/.config/hypr)"
+}
+
+check_package() { pacman -Qi "$1" &>/dev/null; }
+
+# Helper function: Detect Intel GPU type (xe=Arc, i915=iGPU)
+# Returns: "arc", "igpu", "both", or "none"
+# Sets global: has_arc, has_intel_igpu
+detect_intel_gpu_type() {
+  has_arc=false
+  has_intel_igpu=false
+
+  for card_device in /sys/class/drm/card*/device/driver; do
+    [[ -e "$card_device" ]] || continue
+    if [[ -L "$card_device" ]]; then
+      local driver_name=$(basename "$(readlink -f "$card_device")" 2>/dev/null)
+      case "$driver_name" in
+        xe) has_arc=true ;;
+        i915) has_intel_igpu=true ;;
+      esac
+    fi
+  done
+
+  if $has_arc && $has_intel_igpu; then
+    echo "both"
+  elif $has_arc; then
+    echo "arc"
+  elif $has_intel_igpu; then
+    echo "igpu"
+  else
+    echo "none"
+  fi
+}
+
+check_steam_dependencies() {
+  info "Checking Steam dependencies for Arch Linux..."
+
+  # Force refresh package database to avoid 404 errors from stale mirrors
+  info "Force refreshing package database from all mirrors..."
+  sudo pacman -Syy || die "Failed to refresh package database"
+
+  # Prompt for full system upgrade before installing dependencies
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  SYSTEM UPDATE RECOMMENDED"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "  It's recommended to upgrade your system before installing"
+  echo "  gaming dependencies to avoid package version conflicts."
+  echo ""
+  echo "  This will run: sudo pacman -Syu"
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  read -p "Upgrade system now? [Y/n]: " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    info "Upgrading system..."
+    sudo pacman -Syu || die "Failed to upgrade system"
+  else
+    info "Skipping system upgrade - this may cause package conflicts"
+  fi
+  echo ""
+
+  local -a missing_deps=()
+  local -a optional_deps=()
+  local multilib_enabled=false
+
+  # Ensure pciutils is installed for GPU detection
+  if ! command -v lspci >/dev/null 2>&1; then
+    info "Installing pciutils for GPU detection..."
+    sudo pacman -S --needed --noconfirm pciutils || die "Failed to install pciutils"
+  fi
+
+  # Check if multilib repository is enabled (required for 32-bit Steam libraries)
+  if grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null; then
+    multilib_enabled=true
+    info "Multilib repository: enabled"
+  else
+    err "Multilib repository: NOT enabled (required for Steam)"
+    missing_deps+=("multilib-repository")
+  fi
+
+  # Core Steam dependencies
+  local -a core_deps=(
+    "steam"                    # Steam client
+    "lib32-vulkan-icd-loader"  # 32-bit Vulkan loader
+    "vulkan-icd-loader"        # 64-bit Vulkan loader
+    "lib32-mesa"               # 32-bit Mesa (OpenGL)
+    "mesa"                     # 64-bit Mesa
+    "mesa-utils"               # Mesa utilities (glxinfo, etc.)
+    "lib32-systemd"            # 32-bit systemd libs
+    "lib32-glibc"              # 32-bit glibc
+    "lib32-gcc-libs"           # 32-bit GCC libs
+    "lib32-libx11"             # 32-bit X11
+    "lib32-libxss"             # 32-bit X screensaver
+    "lib32-alsa-plugins"       # 32-bit ALSA
+    "lib32-libpulse"           # 32-bit PulseAudio
+    "lib32-openal"             # 32-bit OpenAL
+    "lib32-nss"                # 32-bit NSS
+    "lib32-libcups"            # 32-bit CUPS (printing)
+    "lib32-sdl2"               # 32-bit SDL2
+    "lib32-freetype2"          # 32-bit fonts
+    "lib32-fontconfig"         # 32-bit font config
+    "ttf-liberation"           # Font package
+    "xdg-user-dirs"            # User directories
+  )
+
+  # GPU-specific Vulkan drivers
+  local gpu_vendor
+  gpu_vendor=$(lspci 2>/dev/null | grep -iE 'vga|3d|display' || echo "")
+
+  # Detect GPU type(s) - system may have multiple GPUs
+  local has_nvidia=false has_amd=false has_intel=false has_arc=false has_intel_igpu=false
+
+  if echo "$gpu_vendor" | grep -iq nvidia; then
+    has_nvidia=true
+    info "Detected NVIDIA GPU"
+  fi
+  if echo "$gpu_vendor" | grep -iqE 'amd|radeon|advanced micro'; then
+    has_amd=true
+    info "Detected AMD GPU"
+  fi
+  if echo "$gpu_vendor" | grep -iq intel; then
+    has_intel=true
+    local intel_type=$(detect_intel_gpu_type)
+    case "$intel_type" in
+      arc) info "Detected Intel Arc discrete GPU (xe driver)" ;;
+      igpu) info "Detected Intel integrated GPU (i915 driver)" ;;
+      both) info "Detected Intel Arc + integrated GPU" ;;
+      *) info "Detected Intel GPU" ;;
+    esac
+  fi
+
+  # Intel Arc-specific version checks
+  if $has_intel; then
+    echo ""
+    info "Performing Intel Arc compatibility checks..."
+    check_mesa_version            # Will die if Mesa too old
+    echo ""
+  fi
+
+  local -a gpu_deps=()
+
+  # NVIDIA drivers
+  if $has_nvidia; then
+    gpu_deps+=(
+      "nvidia-utils"              # NVIDIA OpenGL/Vulkan driver
+      "lib32-nvidia-utils"        # 32-bit NVIDIA driver
+      "nvidia-settings"           # NVIDIA control panel
+      "libva-nvidia-driver"       # VA-API support for NVIDIA
+    )
+    # Check if user has nvidia, nvidia-dkms, or nvidia-open-dkms installed
+    if ! check_package "nvidia" && ! check_package "nvidia-dkms" && ! check_package "nvidia-open-dkms"; then
+      info "Note: You may need to install 'nvidia', 'nvidia-dkms', or 'nvidia-open-dkms' kernel module"
+      optional_deps+=("nvidia-dkms")
+    fi
+  fi
+
+  # AMD drivers
+  if $has_amd; then
+    gpu_deps+=(
+      "vulkan-radeon"             # AMD Vulkan driver (RADV)
+      "lib32-vulkan-radeon"       # 32-bit AMD Vulkan driver
+      "libva-mesa-driver"         # VA-API support for AMD
+      "lib32-libva-mesa-driver"   # 32-bit VA-API
+      "mesa-vdpau"                # VDPAU support
+      "lib32-mesa-vdpau"          # 32-bit VDPAU
+    )
+    # Optional AMD-specific packages (only if not installed)
+    ! check_package "xf86-video-amdgpu" && optional_deps+=("xf86-video-amdgpu")
+  fi
+
+  # Intel drivers
+  if $has_intel; then
+    if $has_arc; then
+      # Intel Arc discrete GPUs:
+      # Use a lean Vulkan + compute stack to avoid unnecessary VA-API complexity.
+      gpu_deps+=(
+        "vulkan-intel"              # Intel Vulkan driver (ANV)
+        "lib32-vulkan-intel"        # 32-bit Intel Vulkan driver
+        "vulkan-icd-loader"         # Vulkan ICD loader
+        "lib32-vulkan-icd-loader"   # 32-bit Vulkan ICD loader
+        "intel-compute-runtime"     # OpenCL/compute support (Arc / XE)
+        "level-zero-loader"         # Intel oneAPI Level Zero (if available)
+        "intel-gpu-tools"           # Intel GPU debugging and monitoring tools
+      )
+    else
+      # Integrated Intel GPUs (UHD / Xe iGPU) – keep the full media stack.
+      gpu_deps+=(
+        "vulkan-intel"              # Intel Vulkan driver (ANV)
+        "lib32-vulkan-intel"        # 32-bit Intel Vulkan driver
+        "intel-media-driver"        # VA-API for Intel (Broadwell+)
+        "libva-intel-driver"        # VA-API for older Intel
+        "lib32-libva-intel-driver"  # 32-bit VA-API
+        "intel-compute-runtime"     # OpenCL/compute support
+        "level-zero-loader"         # Intel oneAPI Level Zero (if available)
+        "intel-gpu-tools"           # Intel GPU debugging and monitoring tools
+      )
+    fi
+  fi
+
+  # Fallback if no GPU detected
+  if ! $has_nvidia && ! $has_amd && ! $has_intel; then
+    info "GPU vendor not auto-detected, installing generic Vulkan drivers..."
+    gpu_deps+=("vulkan-radeon" "lib32-vulkan-radeon" "vulkan-intel" "lib32-vulkan-intel")
+  fi
+
+  # Common Vulkan tools for all GPUs
+  gpu_deps+=(
+    "vulkan-tools"                # vkcube and vulkaninfo
+    "vulkan-mesa-layers"          # Mesa Vulkan layers
+  )
+
+  # Optional but recommended packages
+  local -a recommended_deps=(
+    "gamemode"                 # System optimization
+    "lib32-gamemode"           # 32-bit gamemode
+    "gamescope"                # Gaming compositor
+    "mangohud"                 # Performance overlay
+    "lib32-mangohud"           # 32-bit MangoHud
+    "proton-ge-custom-bin"     # Custom Proton (AUR)
+    "protontricks"             # Proton helper
+  )
+
+  # Check core dependencies
+  info "Checking core Steam dependencies..."
+  for dep in "${core_deps[@]}"; do
+    if ! check_package "$dep"; then
+      missing_deps+=("$dep")
+    fi
+  done
+
+  # Check GPU-specific dependencies
+  info "Checking GPU-specific dependencies..."
+  for dep in "${gpu_deps[@]}"; do
+    if ! check_package "$dep"; then
+      missing_deps+=("$dep")
+    fi
+  done
+
+  # Check recommended dependencies
+  info "Checking recommended dependencies..."
+  for dep in "${recommended_deps[@]}"; do
+    if ! check_package "$dep"; then
+      optional_deps+=("$dep")
+    fi
+  done
+
+  # Report findings
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  STEAM DEPENDENCY CHECK RESULTS"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+
+  if [ "$multilib_enabled" = false ]; then
+    echo "  CRITICAL: Multilib repository must be enabled!"
+    echo ""
+    echo "  To enable multilib, edit /etc/pacman.conf and uncomment:"
+    echo "    [multilib]"
+    echo "    Include = /etc/pacman.d/mirrorlist"
+    echo ""
+    echo "  Then run: sudo pacman -Syu"
+    echo ""
+    read -p "Enable multilib repository now? [y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      enable_multilib_repo
+    else
+      die "Multilib repository is required for Steam"
+    fi
+  fi
+
+  # Remove "multilib-repository" from missing_deps if it was added
+  local -a clean_missing=()
+  for item in "${missing_deps[@]}"; do
+    [[ -n "$item" && "$item" != "multilib-repository" ]] && clean_missing+=("$item")
+  done
+  missing_deps=("${clean_missing[@]}")
+
+  if ((${#missing_deps[@]})); then
+    echo "  MISSING REQUIRED PACKAGES (${#missing_deps[@]}):"
+    for dep in "${missing_deps[@]}"; do
+      echo "    • $dep"
+    done
+    echo ""
+
+    read -p "Install missing required packages? [Y/n]: " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+      info "Installing missing dependencies..."
+      sudo pacman -S --needed "${missing_deps[@]}" || die "Failed to install Steam dependencies"
+      info "Required dependencies installed successfully"
+    else
+      err "Cannot proceed without required dependencies"
+      die "Missing required Steam dependencies"
+    fi
+  else
+    info "All required Steam dependencies are installed!"
+  fi
+
+  echo ""
+  if ((${#optional_deps[@]})); then
+    echo "  RECOMMENDED PACKAGES (${#optional_deps[@]}):"
+    for dep in "${optional_deps[@]}"; do
+      echo "    • $dep"
+    done
+    echo ""
+
+    read -p "Install recommended packages? [y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      info "Installing recommended packages..."
+      # Filter out AUR packages (proton-ge-custom-bin needs AUR helper)
+      local -a pacman_optional=()
+      local -a aur_optional=()
+      for dep in "${optional_deps[@]}"; do
+        if pacman -Si "$dep" &>/dev/null; then
+          pacman_optional+=("$dep")
+        else
+          aur_optional+=("$dep")
+        fi
+      done
+
+      if ((${#pacman_optional[@]})); then
+        sudo pacman -S --needed --noconfirm "${pacman_optional[@]}" || info "Some optional packages failed to install"
+      fi
+
+      if ((${#aur_optional[@]})); then
+        echo ""
+        info "The following packages are from AUR and need an AUR helper:"
+        for dep in "${aur_optional[@]}"; do
+          echo "    • $dep"
+        done
+        echo ""
+
+        # Check for AUR helpers
+        if command -v yay >/dev/null 2>&1; then
+          read -p "Install AUR packages with yay? [y/N]: " -n 1 -r
+          echo
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            yay -S --needed --noconfirm "${aur_optional[@]}" || info "Some AUR packages failed to install"
+          fi
+        elif command -v paru >/dev/null 2>&1; then
+          read -p "Install AUR packages with paru? [y/N]: " -n 1 -r
+          echo
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            paru -S --needed --noconfirm "${aur_optional[@]}" || info "Some AUR packages failed to install"
+          fi
+        else
+          info "No AUR helper found (yay/paru). Install manually if desired."
+        fi
+      fi
+    fi
+  else
+    info "All recommended packages are already installed!"
+  fi
+
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+
+  # Additional Steam configuration checks
+  check_steam_config
+}
+
+enable_multilib_repo() {
+  info "Enabling multilib repository..."
+
+  # Backup pacman.conf
+  sudo cp /etc/pacman.conf "/etc/pacman.conf.backup.$(date +%Y%m%d%H%M%S)" || die "Failed to backup pacman.conf"
+
+  # Enable multilib by uncommenting the lines
+  sudo sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf || die "Failed to enable multilib"
+
+  # Verify it was enabled
+  if grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null; then
+    info "Multilib repository enabled successfully"
+    echo ""
+    info "Updating system to enable multilib packages..."
+    read -p "Proceed with system upgrade? [Y/n]: " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+      sudo pacman -Syu || die "Failed to update and upgrade system"
+    else
+      die "System upgrade required after enabling multilib - run 'sudo pacman -Syu' and try again"
+    fi
+  else
+    die "Failed to enable multilib repository"
+  fi
+}
+
+check_steam_config() {
+  info "Checking Steam configuration..."
+
+  # Check for proper permissions and offer to add user to groups
+  local missing_groups=()
+
+  if ! groups | grep -q '\bvideo\b'; then
+    missing_groups+=("video")
+  fi
+
+  if ! groups | grep -q '\binput\b'; then
+    missing_groups+=("input")
+  fi
+
+  if ((${#missing_groups[@]})); then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo "  USER GROUP PERMISSIONS"
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Your user needs to be added to the following groups:"
+    echo ""
+    for group in "${missing_groups[@]}"; do
+      case "$group" in
+        video)
+          echo "    • video  - Required for GPU hardware access"
+          ;;
+        input)
+          echo "    • input  - Required for controller/gamepad support"
+          ;;
+      esac
+    done
+    echo ""
+    echo "  Without these groups, you may experience:"
+    echo "    - GPU access issues"
+    echo "    - Controller/gamepad not working in games"
+    echo ""
+    echo "  NOTE: After adding groups, you MUST log out and log back in"
+    echo "        for the changes to take effect."
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+
+    read -p "Add user to ${missing_groups[*]} group(s)? [Y/n]: " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+      # Join groups with comma for usermod
+      local groups_to_add=$(IFS=,; echo "${missing_groups[*]}")
+
+      info "Adding user to groups: $groups_to_add"
+      if sudo usermod -aG "$groups_to_add" "$USER"; then
+        info "Successfully added user to group(s): $groups_to_add"
+        NEEDS_RELOGIN=1
+      else
+        err "Failed to add user to groups"
+        info "You can manually add yourself with: sudo usermod -aG $groups_to_add $USER"
+      fi
+    else
+      info "Skipping group assignment - you may encounter GPU/controller issues"
+    fi
+  else
+    info "User is in video and input groups - permissions OK"
+  fi
+
+  # Check for Steam directory
+  if [ -d "$HOME/.steam" ]; then
+    info "Steam directory found at ~/.steam"
+  fi
+
+  if [ -d "$HOME/.local/share/Steam" ]; then
+    info "Steam data directory found at ~/.local/share/Steam"
+  fi
+
+  # Check for Proton/Wine dependencies
+  if check_package "wine"; then
+    info "Wine is installed (helps with some Windows games)"
+  else
+    info "Tip: Install 'wine' for better Windows game compatibility"
+  fi
+
+  # Check for controller support
+  if check_package "steam-native-runtime"; then
+    info "Steam native runtime installed (better compatibility)"
+  fi
+
+  # Check kernel parameters for gaming
+  if [ -f /proc/sys/vm/swappiness ]; then
+    local swappiness
+    swappiness=$(cat /proc/sys/vm/swappiness)
+    if [ "$swappiness" -gt 10 ]; then
+      info "Tip: Consider lowering vm.swappiness to 10 for better gaming performance"
+      info "     Current value: $swappiness"
+    fi
+  fi
+
+  # Check for esync/fsync support
+  local max_files
+  max_files=$(ulimit -n 2>/dev/null || echo "0")
+  if [ "$max_files" -lt 524288 ]; then
+    info "Tip: Increase open file limit for esync support"
+    info "     Add to /etc/security/limits.conf:"
+    info "     * hard nofile 524288"
+    info "     * soft nofile 524288"
+  fi
+}
+
+check_mesa_version() {
+  local mesa_version=""
+
+  # Try to get Mesa version from multiple sources
+  if command -v glxinfo >/dev/null 2>&1; then
+    # Extract Mesa version without Perl regex
+    mesa_version=$(glxinfo 2>/dev/null | grep "OpenGL version string" | sed -n 's/.*Mesa \([0-9]\+\.[0-9]\+\).*/\1/p' | head -n1)
+  fi
+
+  # Fallback: check package version
+  if [ -z "$mesa_version" ]; then
+    mesa_version=$(pacman -Q mesa 2>/dev/null | awk '{print $2}' | cut -d'-' -f1)
+  fi
+
+  if [ -z "$mesa_version" ]; then
+    info "Could not detect Mesa version - will install latest from repositories"
+    return 0
+  fi
+
+  # Strip epoch prefix if present (e.g., "1:25.0.0" -> "25.0.0")
+  mesa_version=$(echo "$mesa_version" | sed 's/^[0-9]*://')
+
+  local major minor
+  major=$(echo "$mesa_version" | cut -d'.' -f1)
+  minor=$(echo "$mesa_version" | cut -d'.' -f2)
+
+  local version_number=$((major * 100 + minor))
+  local required_version=2202  # 22.2
+  local recommended_version=2300  # 23.0
+
+  if [ "$version_number" -lt "$required_version" ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo "  ⚠️  MESA VERSION WARNING"
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Current Mesa: $mesa_version"
+    echo "  Required for Intel Arc: 22.2 or higher"
+    echo "  Recommended: 23.0 or higher"
+    echo ""
+    echo "  Intel Arc GPUs require Mesa 22.2+ for proper Vulkan support."
+    echo "  Your current version is too old and will cause issues."
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    die "Mesa version too old for Intel Arc. Update your system: sudo pacman -Syu"
+  elif [ "$version_number" -lt "$recommended_version" ]; then
+    info "Mesa $mesa_version detected (meets minimum 22.2, but 23.0+ recommended)"
+  else
+    info "Mesa version $mesa_version meets Intel Arc recommendations (23.0+)"
+  fi
+
+  return 0
+}
+
+setup_performance_permissions() {
+  local udev_rules_file="/etc/udev/rules.d/99-gaming-performance.rules"
+
+  # Check if udev rules already exist
+  if [ -f "$udev_rules_file" ]; then
+    info "Performance udev rules already installed"
+    return 0
+  fi
+
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  ⚠️  PERFORMANCE PERMISSIONS SETUP"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "  To avoid sudo password prompts during gaming, we need to set"
+  echo "  up permissions for CPU and GPU performance control."
+  echo ""
+  echo "  This will create udev rules to allow users to modify:"
+  echo "  • CPU governor (performance mode)"
+  echo "  • GPU performance settings (AMD/Intel/NVIDIA)"
+  echo ""
+  echo "  This is a one-time setup that requires sudo."
+  echo "  After this, gaming mode will launch without password prompts."
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+
+  read -p "Set up passwordless performance controls? [Y/n]: " -n 1 -r
+  echo
+
+  if [[ $REPLY =~ ^[Nn]$ ]]; then
+    info "Skipping udev rules setup"
+    info "Note: You'll need to enter your password each time you launch gaming mode"
+    return 0
+  fi
+
+  info "Creating udev rules for performance control..."
+
+  # Create the udev rules file
+  sudo tee "$udev_rules_file" > /dev/null <<'UDEV_RULES'
+# Gaming Mode Performance Control Rules
+# Allow users to modify CPU governor and GPU performance settings without sudo
+
+# CPU governor control (all CPUs)
+KERNEL=="cpu[0-9]*", SUBSYSTEM=="cpu", ACTION=="add", RUN+="/bin/chmod 666 /sys/devices/system/cpu/%k/cpufreq/scaling_governor"
+
+# AMD GPU performance control
+KERNEL=="card[0-9]", SUBSYSTEM=="drm", DRIVERS=="amdgpu", ACTION=="add", RUN+="/bin/chmod 666 /sys/class/drm/%k/device/power_dpm_force_performance_level"
+
+# Intel GPU frequency control (i915 driver - NOT used for xe driver GPUs)
+# Note: This script ignores i915 GPUs at runtime to prevent conflicts with xe driver
+KERNEL=="card[0-9]", SUBSYSTEM=="drm", DRIVERS=="i915", ACTION=="add", RUN+="/bin/chmod 666 /sys/class/drm/%k/gt_boost_freq_mhz"
+KERNEL=="card[0-9]", SUBSYSTEM=="drm", DRIVERS=="i915", ACTION=="add", RUN+="/bin/chmod 666 /sys/class/drm/%k/gt_min_freq_mhz"
+KERNEL=="card[0-9]", SUBSYSTEM=="drm", DRIVERS=="i915", ACTION=="add", RUN+="/bin/chmod 666 /sys/class/drm/%k/gt_max_freq_mhz"
+
+# Intel Arc (Xe) GPU control - NOT CURRENTLY FUNCTIONAL
+# The xe driver does not expose user-controllable frequency knobs in sysfs yet
+# Leaving these here for future kernel support
+KERNEL=="card[0-9]", SUBSYSTEM=="drm", DRIVERS=="xe", ACTION=="add", RUN+="/bin/chmod 666 /sys/class/drm/%k/device/power/control"
+UDEV_RULES
+
+  if [ $? -ne 0 ]; then
+    err "Failed to create udev rules"
+    info "You can manually create $udev_rules_file later"
+    return 1
+  fi
+
+  info "Udev rules created successfully"
+
+  # Reload udev rules
+  info "Reloading udev rules..."
+  sudo udevadm control --reload-rules || info "Failed to reload udev rules"
+  sudo udevadm trigger --subsystem-match=cpu --subsystem-match=drm || info "Failed to trigger udev"
+
+  # Apply permissions immediately (don't wait for reboot)
+  info "Applying permissions immediately..."
+
+  # CPU governor permissions
+  if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
+    sudo chmod 666 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || \
+      info "Could not set CPU governor permissions (will work after reboot)"
+  fi
+
+  # Detect GPU and apply permissions
+  local gpu_vendor
+  gpu_vendor=$(lspci 2>/dev/null | grep -iE 'vga|3d|display' || echo "")
+
+  # AMD GPU permissions
+  if echo "$gpu_vendor" | grep -iqE 'amd|radeon|advanced micro'; then
+    sudo chmod 666 /sys/class/drm/card*/device/power_dpm_force_performance_level 2>/dev/null || \
+      info "Could not set AMD GPU permissions (will work after reboot)"
+  fi
+
+  # Intel i915 GPU permissions (will be ignored at runtime)
+  if echo "$gpu_vendor" | grep -iq intel; then
+    sudo chmod 666 /sys/class/drm/card*/gt_boost_freq_mhz 2>/dev/null || true
+    sudo chmod 666 /sys/class/drm/card*/gt_min_freq_mhz 2>/dev/null || true
+    sudo chmod 666 /sys/class/drm/card*/gt_max_freq_mhz 2>/dev/null || true
+  fi
+
+  info "✓ Performance permissions configured"
+  info "Gaming mode will now launch without password prompts"
+
+  return 0
+}
+
+setup_intel_arc_workarounds() {
+  # Fix GTK4 rendering issues on Intel Arc GPUs (Nautilus, GNOME apps)
+  # Force OpenGL renderer instead of Vulkan to prevent visual glitches
+
+  local intel_type=$(detect_intel_gpu_type)
+  [[ "$intel_type" == "arc" || "$intel_type" == "both" ]] || return 0
+
+  local env_dir="$HOME/.config/environment.d"
+  local env_file="$env_dir/10-intel-arc-gtk.conf"
+
+  # Check if workaround already applied
+  if [[ -f "$env_file" ]] && grep -q "GSK_RENDERER=" "$env_file" 2>/dev/null; then
+    local current_renderer=$(grep "GSK_RENDERER=" "$env_file" | cut -d'=' -f2)
+    info "Intel Arc GTK4 workaround already configured (GSK_RENDERER=$current_renderer)"
+    return 0
+  fi
+
+  echo ""
+  info "Intel Arc GTK4 Rendering Fix (REQUIRED)"
+  info "Applying GSK_RENDERER=gl to fix Nautilus/GTK4 visual glitches"
+  info "Config: $env_file"
+  info "Note: Log out and log back in after installation"
+  echo ""
+
+  local renderer="gl"
+
+  # Create environment.d directory if it doesn't exist
+  mkdir -p "$env_dir" || die "Failed to create $env_dir"
+
+  # Create the environment file
+  info "Creating GTK4 renderer configuration..."
+  cat > "$env_file" <<ENV_CONFIG
+# Intel Arc GTK4 Rendering Fix
+# Added by gaming mode installer
+# Fixes visual glitches in GTK4 applications on Wayland with Intel Arc GPUs
+
+GSK_RENDERER=$renderer
+ENV_CONFIG
+
+  if [ $? -ne 0 ]; then
+    err "Failed to create environment file"
+    info "You can manually create $env_file with: GSK_RENDERER=$renderer"
+    return 1
+  fi
+
+  info "✓ Intel Arc GTK4 fix configured (GSK_RENDERER=$renderer)"
+  info "Changes will take effect after logging out and back in"
+
+  # Set a flag to remind user to log out
+  NEEDS_RELOGIN=1
+
+  return 0
+}
+
+setup_requirements() {
+  local -a required_packages=("steam" "gamescope" "mangohud" "gum" "python" "libcap" "gamemode" "curl" "pciutils")
+  local -a packages_to_install=()
+  for pkg in "${required_packages[@]}"; do
+    check_package "$pkg" || packages_to_install+=("$pkg")
+  done
+
+  if ((${#packages_to_install[@]})); then
+    info "The following packages are required: ${packages_to_install[*]}"
+    read -p "Install missing packages? [Y/n]: " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+      sudo pacman -S --needed "${packages_to_install[@]}" || die "package install failed"
+    else
+      die "Required packages missing - cannot continue"
+    fi
+  else
+    info "All required packages present."
+  fi
+
+  # Set up passwordless performance controls
+  setup_performance_permissions
+
+  # Fix Intel Arc GTK4 rendering issues (Nautilus glitches, etc.)
+  setup_intel_arc_workarounds
+
+  if [[ "${PERFORMANCE_MODE,,}" == "enabled" ]] && command -v gamescope >/dev/null 2>&1; then
+    # Check if capability is already set before trying to set it
+    if ! getcap "$(command -v gamescope)" 2>/dev/null | grep -q 'cap_sys_nice'; then
+      echo ""
+      echo "════════════════════════════════════════════════════════════════"
+      echo "  ⚠️  GAMESCOPE CAPABILITY REQUEST"
+      echo "════════════════════════════════════════════════════════════════"
+      echo ""
+      echo "  Performance mode requires granting cap_sys_nice to gamescope."
+      echo ""
+      echo "  This allows gamescope to:"
+      echo "  • Run with real-time priority (--rt flag)"
+      echo "  • Reduce latency and improve frame pacing"
+      echo ""
+      echo "  Security note: This capability will be granted to ALL users"
+      echo "  who can execute $(command -v gamescope)"
+      echo ""
+      echo "  You can remove it later with:"
+      echo "  sudo setcap -r $(command -v gamescope)"
+      echo ""
+      echo "════════════════════════════════════════════════════════════════"
+      echo ""
+      read -p "Grant cap_sys_nice to gamescope? [y/N]: " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        sudo setcap 'cap_sys_nice+ep' "$(command -v gamescope)" || info "setcap failed; --rt may be ignored."
+        info "cap_sys_nice granted to gamescope"
+      else
+        info "Skipping cap_sys_nice - gamescope will run without real-time priority"
+        info "Performance mode will still work but with slightly higher latency"
+      fi
+    else
+      info "Gamescope already has cap_sys_nice capability"
+    fi
+  fi
+}
+
+deploy_launchers() {
+  if [ ! -d "$TARGET_DIR" ]; then
+    mkdir -p "$TARGET_DIR" || die "cannot create $TARGET_DIR"
+    CREATED_TARGET_DIR=1
+  fi
+
+  cat > "$SWITCH_BIN" <<'EOF'
+#!/bin/bash
+set -Euo pipefail
+STATE_DIR="$HOME/.cache/gaming-session"
+LOCK_FILE="$STATE_DIR/idle-prevention.lock"
+SESSION_FILE="$STATE_DIR/session.pid"
+CONFIG_FILE="/etc/gaming-mode.conf"
+[[ -f "$HOME/.gaming-mode.conf" ]] && CONFIG_FILE="$HOME/.gaming-mode.conf"
+source "$CONFIG_FILE" 2>/dev/null || true
+# Set defaults for any unset variables (works even if config partially defines them)
+: "${STEAM_LAUNCH_MODE:=bigpicture}"
+: "${PERFORMANCE_MODE:=enabled}"
+
+# Cleanup function to restore system state on failure
+cleanup_on_error() {
+  echo "[!] Error occurred, restoring system state..." >&2
+
+  # Restore CPU governor
+  if [[ -f "$STATE_DIR/original_governors" ]]; then
+    while IFS=: read -r cpu_path original_gov; do
+      [[ -z "$cpu_path" || -z "$original_gov" || "$original_gov" == "unknown" ]] && continue
+      if [[ -f "$cpu_path" ]]; then
+        echo "$original_gov" > "$cpu_path" 2>/dev/null || \
+          echo "$original_gov" | sudo tee "$cpu_path" >/dev/null 2>&1 || true
+      fi
+    done < "$STATE_DIR/original_governors"
+    rm -f "$STATE_DIR/original_governors"
+  fi
+
+  # Restore GPU performance mode
+  if [[ -f "$STATE_DIR/gpu_perf_mode" ]]; then
+    while IFS=: read -r gpu_path original_mode; do
+      [[ -z "$gpu_path" || -z "$original_mode" ]] && continue
+      [[ "$original_mode" == "nvidia_optimized" || "$original_mode" == "amd_optimized" || "$original_mode" == "xe_optimized" ]] && continue
+      if [[ -f "$gpu_path" ]]; then
+        echo "$original_mode" > "$gpu_path" 2>/dev/null || \
+          echo "$original_mode" | sudo tee "$gpu_path" >/dev/null 2>&1 || true
+      fi
+    done < "$STATE_DIR/gpu_perf_mode"
+    # Restore NVIDIA settings
+    if grep -q "nvidia_optimized" "$STATE_DIR/gpu_perf_mode" 2>/dev/null; then
+      command -v nvidia-settings >/dev/null 2>&1 && nvidia-settings -a "[gpu:0]/GpuPowerMizerMode=0" >/dev/null 2>&1 || true
+      command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -pm 0 >/dev/null 2>&1 || true
+    fi
+    rm -f "$STATE_DIR/gpu_perf_mode"
+  fi
+
+  # Restart hypridle only if it was running before gaming mode
+  if [[ -f "$STATE_DIR/hypridle_state" ]]; then
+    if [[ "$(cat "$STATE_DIR/hypridle_state" 2>/dev/null)" == "running" ]]; then
+      if command -v hypridle >/dev/null 2>&1 && ! pgrep -x hypridle >/dev/null 2>&1; then
+        nohup hypridle >/dev/null 2>&1 &
+        disown
+      fi
+    fi
+    rm -f "$STATE_DIR/hypridle_state"
+  fi
+
+  # Clean up state files
+  rm -f "$LOCK_FILE" "$SESSION_FILE" 2>/dev/null || true
+}
+
+# Set trap to cleanup on any error
+trap cleanup_on_error ERR
+
+steam_icon() { echo "steam"; }
+
+# Helper function to center output in terminal
+center_output() {
+  local width=${1:-70}
+  local term_width=$(tput cols)
+  local padding=$(( (term_width - width) / 2 ))
+  [[ $padding -lt 0 ]] && padding=0
+  while IFS= read -r line; do
+    printf "%${padding}s%s\n" "" "$line"
+  done
+}
+
+center_notify() {
+  local msg="$*"
+  # TUI notification using gum - centered (uses terminal theme colors)
+  clear
+  local term_width=$(tput cols)
+  local box_width=50
+  local padding=$(( (term_width - box_width) / 2 ))
+  [[ $padding -lt 0 ]] && padding=0
+  echo ""
+  gum style --align center --width 50 --border normal --padding "1 2" "$msg" | while IFS= read -r line; do printf "%${padding}s%s\\n" "" "$line"; done
+  sleep 2
+}
+
+get_display() {
+  local j; j="$(hyprctl monitors -j 2>/dev/null || true)"
+  if [[ -z "$j" ]]; then echo "1920 1080 60"; return; fi
+  echo "$j" | python3 -c "
+import json,sys
+try:
+  d=json.load(sys.stdin); m=d[0] if d else {}
+  print(int(m.get('width',1920)), int(m.get('height',1080)), int(round(m.get('refreshRate',60))))
+except Exception:
+  print('1920 1080 60')
+"
+}
+
+read -r horizontal_res vertical_res monitor_hz <<<"$(get_display)"
+DISPLAY_WIDTH="$horizontal_res"; DISPLAY_HEIGHT="$vertical_res"; REFRESH_RATE="$monitor_hz"
+
+# Detect system theme and set gum colors to match Omarchy theme
+detect_system_theme() {
+  local omarchy_theme_dir="$HOME/.config/omarchy/current/theme"
+  local ghostty_conf="$omarchy_theme_dir/ghostty.conf"
+
+  # Default colors (fallback)
+  local accent_color="6"      # Cyan (ANSI color 6)
+  local border_color="7"      # White/light gray
+  local cursor_color="6"      # Cyan
+
+  # Read colors from Omarchy ghostty theme if available
+  if [[ -f "$ghostty_conf" ]]; then
+    # Extract accent color (use palette 6 or 2 as accent - typically cyan/green)
+    local palette_6=$(grep "^palette = 6=" "$ghostty_conf" 2>/dev/null | cut -d'=' -f3 | tr -d ' #')
+    local palette_2=$(grep "^palette = 2=" "$ghostty_conf" 2>/dev/null | cut -d'=' -f3 | tr -d ' #')
+
+    if [[ -n "$palette_6" ]]; then
+      # Convert hex to gum color (use the hex directly)
+      accent_color="#$palette_6"
+      cursor_color="#$palette_6"
+    elif [[ -n "$palette_2" ]]; then
+      accent_color="#$palette_2"
+      cursor_color="#$palette_2"
+    fi
+
+    # Get foreground color for borders
+    local fg_color=$(grep "^foreground = " "$ghostty_conf" 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
+    if [[ -n "$fg_color" ]]; then
+      border_color="$fg_color"
+    fi
+  fi
+
+  # Set gum environment variables to match theme
+  export GUM_CHOOSE_CURSOR_FOREGROUND="$cursor_color"
+  export GUM_CHOOSE_SELECTED_FOREGROUND="$accent_color"
+  export GUM_STYLE_BORDER_FOREGROUND="$border_color"
+  export GUM_SPIN_SPINNER_FOREGROUND="$accent_color"
+}
+
+detect_system_theme
+
+# Check if previous settings exist
+SETTINGS_FILE="$STATE_DIR/last-settings"
+USE_PREVIOUS=false
+
+# Initialize padding for centering (used in all paths)
+term_width=$(tput cols)
+menu_width=75
+menu_pad=$(( (term_width - menu_width) / 2 ))
+[[ $menu_pad -lt 0 ]] && menu_pad=0
+pad_str=$(printf "%${menu_pad}s" "")
+
+clear
+echo ""
+gum style --align center --width 70 --border double --padding "1 2" $'W.O.P.R\n\nShall we play a game?' | center_output 74
+
+if [[ -f "$SETTINGS_FILE" ]]; then
+  # Ask user if they want to use previous settings
+  echo ""
+  gum style --align center --width 70 --bold "Previous settings found." | center_output 70
+  echo ""
+
+  # Calculate padding for confirm dialog
+  term_width=$(tput cols)
+  confirm_width=40
+  confirm_pad=$(( (term_width - confirm_width) / 2 ))
+  [[ $confirm_pad -lt 0 ]] && confirm_pad=0
+  confirm_pad_str=$(printf "%${confirm_pad}s" "")
+
+  gum style --align center --width 70 "Use previous settings?" | center_output 70
+  echo ""
+
+  CONFIRM_CHOICE=$(gum choose --height 6 \
+    "${confirm_pad_str}Yes - Use previous settings" \
+    "${confirm_pad_str}No - Configure new settings") || CONFIRM_CHOICE=""
+
+  if [[ "$CONFIRM_CHOICE" == *"Yes"* ]]; then
+    USE_PREVIOUS=true
+    source "$SETTINGS_FILE"
+  else
+    USE_PREVIOUS=false
+  fi
+fi
+
+if [[ "$USE_PREVIOUS" == false ]]; then
+  # Show resolution selection menu
+  clear
+  echo ""
+  gum style --align center --width 70 --border double --padding "1 2" "🎮 Gaming Mode - Resolution Settings" | center_output 74
+  echo ""
+  gum style --align center --width 70 --faint "Current Display: ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} @ ${REFRESH_RATE}Hz" | center_output 70
+  echo ""
+  gum style --align center --width 70 "Select your preferred gaming resolution:" | center_output 70
+  echo ""
+
+  # Format native resolution option to align with others (30 chars before │)
+  native_res="${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}"
+  native_option=$(printf "%-30s" "$native_res")
+
+  RESOLUTION_CHOICE=$(gum choose --height 12 \
+    "${pad_str}${native_option}│  Render at native resolution (best quality)" \
+    "${pad_str}1440p Upscaled                │  Render at 1080p, upscale to 1440p (better FPS)" \
+    "${pad_str}1440p (2560x1440)             │  Render at 1440p resolution" \
+    "${pad_str}UHD Upscaled                  │  Render at 1440p, upscale to 4K (balanced)" \
+    "${pad_str}UHD (3840x2160)               │  Render at 4K/UHD resolution") || {
+    center_notify "Gaming Mode cancelled"
+    exit 0
+  }
+
+  # If user cancelled, exit
+  if [[ -z "$RESOLUTION_CHOICE" ]]; then
+    center_notify "Gaming Mode cancelled"
+    exit 0
+  fi
+
+  # Extract just the resolution name (before the │), removing padding
+  RESOLUTION_CHOICE=$(echo "$RESOLUTION_CHOICE" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*│.*//' | xargs)
+
+  # Convert native resolution to standard format for matching
+  if [[ "$RESOLUTION_CHOICE" == "${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}" ]]; then
+    RESOLUTION_CHOICE="Native (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT})"
+  fi
+
+  # Show MangoHud preset selection
+  clear
+  echo ""
+  gum style --align center --width 70 --border double --padding "1 2" "🎮 Gaming Mode - MangoHud Settings" | center_output 74
+  echo ""
+  gum style --align center --width 70 "Select your preferred performance overlay:" | center_output 70
+  echo ""
+
+  MANGOHUD_CHOICE=$(gum choose --height 10 \
+    "${pad_str}Off         │  No performance overlay (cleanest view)" \
+    "${pad_str}Minimal     │  FPS counter only (recommended)" \
+    "${pad_str}Full Stats  │  Detailed metrics (CPU, GPU, temps, frametime)") || {
+    center_notify "Gaming Mode cancelled"
+    exit 0
+  }
+
+  # If user cancelled, exit
+  if [[ -z "$MANGOHUD_CHOICE" ]]; then
+    center_notify "Gaming Mode cancelled"
+    exit 0
+  fi
+
+  # Extract just the preset name (before the │), removing padding
+  MANGOHUD_CHOICE=$(echo "$MANGOHUD_CHOICE" | sed 's/^[[:space:]]*//' | sed 's/  │.*//' | xargs)
+
+  # Save settings for next time
+  mkdir -p "$STATE_DIR"
+  cat > "$SETTINGS_FILE" <<SETTINGS
+RESOLUTION_CHOICE="$RESOLUTION_CHOICE"
+MANGOHUD_CHOICE="$MANGOHUD_CHOICE"
+SETTINGS
+
+fi
+
+# Set game rendering and output resolution based on choice
+game_width="$DISPLAY_WIDTH"
+game_height="$DISPLAY_HEIGHT"
+output_width="$DISPLAY_WIDTH"
+output_height="$DISPLAY_HEIGHT"
+
+case "$RESOLUTION_CHOICE" in
+  "Native (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT})")
+    game_width="$DISPLAY_WIDTH"
+    game_height="$DISPLAY_HEIGHT"
+    output_width="$DISPLAY_WIDTH"
+    output_height="$DISPLAY_HEIGHT"
+    ;;
+  "UHD (3840x2160)")
+    game_width=3840
+    game_height=2160
+    output_width=3840
+    output_height=2160
+    ;;
+  "UHD Upscaled")
+    game_width=2560
+    game_height=1440
+    output_width=3840
+    output_height=2160
+    ;;
+  "1440p (2560x1440)")
+    game_width=2560
+    game_height=1440
+    output_width=2560
+    output_height=1440
+    ;;
+  "1440p Upscaled")
+    game_width=1920
+    game_height=1080
+    output_width=2560
+    output_height=1440
+    ;;
+esac
+
+mkdir -p "$STATE_DIR"
+: > "$LOCK_FILE"
+
+# Save hypridle state and terminate if running
+if pgrep -x hypridle >/dev/null 2>&1; then
+  # Mark that hypridle was running so we can restore it later
+  echo "running" > "$STATE_DIR/hypridle_state"
+
+  pkill hypridle 2>/dev/null
+  # Wait up to 2 seconds for graceful shutdown
+  for i in {1..4}; do
+    sleep 0.5
+    pgrep -x hypridle >/dev/null 2>&1 || break
+  done
+  # Force kill if still running
+  pkill -9 hypridle 2>/dev/null || true
+else
+  # Mark that hypridle was not running
+  echo "stopped" > "$STATE_DIR/hypridle_state"
+fi
+
+# ===== CPU GOVERNOR OPTIMIZATION =====
+# Set CPU to performance mode for lower latency and consistent frame times
+if [[ -d /sys/devices/system/cpu/cpu0/cpufreq ]]; then
+  # Save current governor for each CPU (handles hybrid CPUs with different governors)
+  : > "$STATE_DIR/original_governors"
+  for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    if [[ -f "$cpu" ]]; then
+      current_gov=$(cat "$cpu" 2>/dev/null || echo "unknown")
+      echo "$cpu:$current_gov" >> "$STATE_DIR/original_governors"
+    fi
+  done
+
+  # Set all CPUs to performance mode
+  for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    if [[ -f "$cpu" ]]; then
+      if [[ -w "$cpu" ]]; then
+        echo performance > "$cpu" 2>/dev/null || \
+          echo performance | sudo tee "$cpu" >/dev/null 2>&1
+      else
+        echo performance | sudo tee "$cpu" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+fi
+
+# ===== GPU PERFORMANCE MODE =====
+# Force GPU to maximum clocks for stable performance
+# Initialize GPU state file (clear any old data)
+: > "$STATE_DIR/gpu_perf_mode"
+
+GPU_VENDOR=$(lspci 2>/dev/null | grep -iE 'vga|3d|display' || echo "")
+
+# Detect all GPU types
+HAS_AMD=false
+HAS_NVIDIA=false
+HAS_INTEL=false
+
+echo "$GPU_VENDOR" | grep -iqE 'amd|radeon|advanced micro' && HAS_AMD=true
+echo "$GPU_VENDOR" | grep -iq nvidia && HAS_NVIDIA=true
+echo "$GPU_VENDOR" | grep -iq intel && HAS_INTEL=true
+
+# AMD GPU optimization
+if $HAS_AMD; then
+  for gpu in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+    if [[ -f "$gpu" ]]; then
+      # Save current mode
+      current_mode=$(cat "$gpu" 2>/dev/null || echo "auto")
+      echo "$gpu:$current_mode" >> "$STATE_DIR/gpu_perf_mode"
+
+      # Set to high performance
+      if [[ -w "$gpu" ]]; then
+        echo high > "$gpu" 2>/dev/null || \
+          echo high | sudo tee "$gpu" >/dev/null 2>&1
+      fi
+    fi
+  done
+  echo "amd_optimized" >> "$STATE_DIR/gpu_perf_mode"
+fi
+
+# NVIDIA GPU optimization
+if $HAS_NVIDIA; then
+  # nvidia-settings requires X display, may not work on pure Wayland
+  if command -v nvidia-settings >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+    # Set PowerMizer to max performance (mode 1)
+    if nvidia-settings -a "[gpu:0]/GpuPowerMizerMode=1" >/dev/null 2>&1; then
+      echo "nvidia_optimized" >> "$STATE_DIR/gpu_perf_mode"
+    fi
+  fi
+  # Also try nvidia-smi for persistence mode (doesn't require display)
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -pm 1 >/dev/null 2>&1 || true
+  fi
+fi
+
+# ===== INTEL GPU OPTIMIZATION (XE DRIVER ONLY) =====
+# IMPORTANT: This section ONLY optimizes Intel GPUs using the xe driver (Arc GPUs)
+# It IGNORES i915 GPUs (integrated graphics) to prevent conflicts
+# DISABLED: xe driver optimization causes visual glitches on Arc B580 with kernel 6.17
+# The xe driver power management is not mature enough for forced always-on mode
+if $HAS_INTEL; then
+  # Check each Intel card to see which driver it uses
+  for card_device in /sys/class/drm/card*/device/driver; do
+    if [[ -L "$card_device" ]]; then
+      # Get the driver name
+      driver_name=$(basename "$(readlink -f "$card_device")")
+
+      # Only process xe driver cards
+      if [[ "$driver_name" == "xe" ]]; then
+        # Extract card name (e.g., card0)
+        card_path=$(dirname "$(dirname "$card_device")")
+        card_name=$(basename "$card_path")
+
+        echo "# xe driver detected on $card_name - SKIPPED (optimization disabled)" >> "$STATE_DIR/gpu_perf_mode"
+
+        # NOTE: Power management optimization for xe driver is DISABLED
+        # Forcing the GPU to always-on mode causes visual glitches on Arc B580
+        # with kernel 6.17.x. Let the driver manage power automatically.
+        #
+        # This may be revisited when xe driver matures in future kernels.
+
+      elif [[ "$driver_name" == "i915" ]]; then
+        # Explicitly skip i915 cards
+        card_path=$(dirname "$(dirname "$card_device")")
+        card_name=$(basename "$card_path")
+        echo "# i915 driver detected on $card_name - SKIPPED (not optimized)" >> "$STATE_DIR/gpu_perf_mode"
+      fi
+    fi
+  done
+fi
+
+# center_notify "Starting Gamesmode at ${game_width}x${game_height}…"
+
+gamescope_perf=""
+[[ "${PERFORMANCE_MODE,,}" == "enabled" ]] && gamescope_perf="--rt --immediate-flips"
+steam_args=""
+case "${STEAM_LAUNCH_MODE,,}" in
+  gamepadui) steam_args="-gamepadui" ;;
+  bigpicture|"") steam_args="-tenfoot" ;;
+  *) steam_args="-tenfoot" ;;
+esac
+
+# Configure MangoHud based on user choice
+mangohud_flag=""
+mangohud_config=""
+case "$MANGOHUD_CHOICE" in
+  "Off")
+    mangohud_flag=""
+    ;;
+  "Minimal")
+    mangohud_flag="--mangoapp"
+    mangohud_config="fps,fps_only,position=top-left,font_size=24"
+    ;;
+  "Full Stats")
+    mangohud_flag="--mangoapp"
+    mangohud_config="cpu_temp,gpu_temp,cpu_power,gpu_power,ram,vram,fps,frametime,frame_timing=1,gpu_stats,cpu_stats,position=top-left"
+    ;;
+esac
+
+# Show launch status
+clear
+echo ""
+gum style --align center --width 70 --border double --padding "1 2" "🎮 Launching Gaming Mode" | center_output 74
+echo ""
+gum style --align center --width 70 --faint "Resolution: ${game_width}x${game_height}" | center_output 70
+gum style --align center --width 70 --faint "Output: ${output_width}x${output_height}" | center_output 70
+gum style --align center --width 70 --faint "Refresh: ${REFRESH_RATE}Hz" | center_output 70
+gum style --align center --width 70 --faint "MangoHud: ${MANGOHUD_CHOICE}" | center_output 70
+echo ""
+echo "${pad_str}" | tr -d '\\n'
+gum spin --spinner dot --title "Starting gamescope..." -- sleep 2
+
+# Launch gamescope with MangoHud configuration and Gamemode optimizations
+# Gamemode adds: process priority, I/O scheduling, and additional system tweaks
+if [[ -n "$mangohud_config" ]]; then
+  export MANGOHUD_CONFIG="$mangohud_config"
+fi
+setsid gamemoderun /usr/bin/gamescope $gamescope_perf $mangohud_flag -f -w "$game_width" -h "$game_height" -W "$output_width" -H "$output_height" -r "$REFRESH_RATE" --force-grab-cursor -e -- /usr/bin/steam $steam_args &
+
+# Capture the actual PID of our gamescope instance (not all gamescope processes)
+gamescope_pid=$!
+
+# Give gamescope a moment to initialize
+sleep 2
+
+# Verify gamescope started successfully
+if ! kill -0 "$gamescope_pid" 2>/dev/null; then
+  echo "[!] ERROR: Gamescope failed to start!" >&2
+  echo "[!] Restoring system state..." >&2
+  cleanup_on_error
+  exit 1
+fi
+
+# Save our specific gamescope PID for cleanup
+echo "$gamescope_pid" > "$SESSION_FILE"
+
+exit 0
+EOF
+  chmod +x "$SWITCH_BIN" || die "cannot chmod $SWITCH_BIN"
+
+  cat > "$RETURN_BIN" <<'EOF'
+#!/bin/bash
+set -Euo pipefail
+STATE_DIR="$HOME/.cache/gaming-session"
+LOCK_FILE="$STATE_DIR/idle-prevention.lock"
+SESSION_FILE="$STATE_DIR/session.pid"
+
+steam_icon() { echo "steam"; }
+center_notify() {
+  # TUI notification - brief message on exit (uses terminal theme colors)
+  if command -v gum >/dev/null 2>&1; then
+    clear
+    local term_width=$(tput cols)
+    local box_width=50
+    local padding=$(( (term_width - box_width) / 2 ))
+    [[ $padding -lt 0 ]] && padding=0
+    echo ""
+    gum style --align center --width 50 --border normal --padding "1 2" "BACK TO WORK" | while IFS= read -r line; do printf "%${padding}s%s\\n" "" "$line"; done
+    sleep 1
+  else
+    echo "BACK TO WORK"
+    sleep 1
+  fi
+}
+
+# First, gracefully terminate Steam to allow it to save state
+if pgrep -x steam >/dev/null 2>&1; then
+  pkill -TERM steam 2>/dev/null
+  # Wait up to 3 seconds for graceful shutdown
+  for i in {1..6}; do
+    sleep 0.5
+    pgrep -x steam >/dev/null 2>&1 || break
+  done
+  # Force kill if still running
+  pkill -9 steam 2>/dev/null || true
+fi
+
+# Kill any remaining Steam processes (reaper, fossilize, etc.)
+pkill -9 -f "steam" 2>/dev/null || true
+
+# Terminate gamescope (this should also kill Steam if it's still inside)
+if [[ -f "$SESSION_FILE" ]]; then
+  PID="$(cat "$SESSION_FILE" 2>/dev/null || true)"
+  if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
+    kill "$PID" 2>/dev/null || true
+    # Wait up to 2 seconds for graceful shutdown
+    for i in {1..4}; do
+      sleep 0.5
+      kill -0 "$PID" 2>/dev/null || break
+    done
+    # Force kill if still running
+    kill -9 "$PID" 2>/dev/null || true
+  fi
+fi
+
+# Gracefully terminate gamescope with proper verification
+if pgrep -x gamescope >/dev/null 2>&1; then
+  pkill gamescope 2>/dev/null
+  # Wait up to 2 seconds for graceful shutdown
+  for i in {1..4}; do
+    sleep 0.5
+    pgrep -x gamescope >/dev/null 2>&1 || break
+  done
+  # Force kill if still running
+  pkill -9 gamescope 2>/dev/null || true
+fi
+
+# ===== RESTORE CPU GOVERNOR =====
+if [[ -f "$STATE_DIR/original_governors" ]]; then
+  while IFS=: read -r cpu_path original_gov; do
+    [[ -z "$cpu_path" || -z "$original_gov" || "$original_gov" == "unknown" ]] && continue
+    if [[ -f "$cpu_path" ]]; then
+      if [[ -w "$cpu_path" ]]; then
+        echo "$original_gov" > "$cpu_path" 2>/dev/null || \
+          echo "$original_gov" | sudo tee "$cpu_path" >/dev/null 2>&1
+      else
+        echo "$original_gov" | sudo tee "$cpu_path" >/dev/null 2>&1 || true
+      fi
+    fi
+  done < "$STATE_DIR/original_governors"
+  rm -f "$STATE_DIR/original_governors"
+fi
+
+# ===== RESTORE GPU PERFORMANCE MODE =====
+if [[ -f "$STATE_DIR/gpu_perf_mode" ]]; then
+  while IFS=: read -r gpu_path original_mode; do
+    # Skip empty or malformed lines
+    [[ -z "$gpu_path" || -z "$original_mode" ]] && continue
+
+    # Skip marker lines and comments
+    [[ "$original_mode" == "nvidia_optimized" || "$original_mode" == "amd_optimized" || "$original_mode" == "xe_optimized" ]] && continue
+    [[ "$gpu_path" == "#"* ]] && continue
+
+    if [[ -f "$gpu_path" ]]; then
+      if [[ -w "$gpu_path" ]]; then
+        echo "$original_mode" > "$gpu_path" 2>/dev/null || \
+          echo "$original_mode" | sudo tee "$gpu_path" >/dev/null 2>&1
+      fi
+    fi
+  done < "$STATE_DIR/gpu_perf_mode"
+
+  # Restore NVIDIA settings if they were changed
+  if grep -q "nvidia_optimized" "$STATE_DIR/gpu_perf_mode" 2>/dev/null; then
+    if command -v nvidia-settings >/dev/null 2>&1; then
+      # Set back to Adaptive mode (0)
+      nvidia-settings -a "[gpu:0]/GpuPowerMizerMode=0" >/dev/null 2>&1
+    fi
+    # Disable persistence mode
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      nvidia-smi -pm 0 >/dev/null 2>&1 || true
+    fi
+  fi
+
+  rm -f "$STATE_DIR/gpu_perf_mode"
+fi
+
+# ===== RESTART HYPRIDLE =====
+# Restart hypridle only if it was running before gaming mode
+if [[ -f "$STATE_DIR/hypridle_state" ]]; then
+  if [[ "$(cat "$STATE_DIR/hypridle_state" 2>/dev/null)" == "running" ]]; then
+    if command -v hypridle >/dev/null 2>&1; then
+      # Check if hypridle is not already running
+      if ! pgrep -x hypridle >/dev/null 2>&1; then
+        nohup hypridle >/dev/null 2>&1 &
+        disown
+      fi
+    fi
+  fi
+  rm -f "$STATE_DIR/hypridle_state"
+fi
+
+rm -f "$LOCK_FILE" "$SESSION_FILE" 2>/dev/null || true
+EOF
+  chmod +x "$RETURN_BIN" || die "cannot chmod $RETURN_BIN"
+}
+
+configure_shortcuts() {
+  info "Adding keybindings to: $BINDINGS_CONFIG"
+
+  # Check if bindings already exist
+  if grep -q "# Gaming Mode bindings - added by installation script" "$BINDINGS_CONFIG" 2>/dev/null; then
+    info "Gaming mode bindings already exist in config, skipping..."
+    return 0
+  fi
+
+  # Detect the binding style used in the config
+  local bind_style="bindd"
+  if ! grep -q "^bindd[[:space:]]*=" "$BINDINGS_CONFIG" 2>/dev/null; then
+    if grep -q "^bind[[:space:]]*=" "$BINDINGS_CONFIG" 2>/dev/null; then
+      bind_style="bind"
+    fi
+  fi
+
+  # Detect preferred terminal (ghostty preferred, fallback to others)
+  local terminal_cmd="ghostty -e"
+  local terminal_class="com.mitchellh.ghostty"
+
+  if ! command -v ghostty >/dev/null 2>&1; then
+    if command -v kitty >/dev/null 2>&1; then
+      terminal_cmd="kitty -e"
+      terminal_class="kitty"
+    elif command -v alacritty >/dev/null 2>&1; then
+      terminal_cmd="alacritty -e"
+      terminal_class="Alacritty"
+    elif command -v foot >/dev/null 2>&1; then
+      terminal_cmd="foot -e"
+      terminal_class="foot"
+    else
+      terminal_cmd="xterm -e"
+      terminal_class="XTerm"
+    fi
+  fi
+
+  info "Using terminal: ${terminal_cmd%% -*} (class: $terminal_class)"
+
+  # Add bindings to the config file (TUI needs terminal with window rules)
+  {
+    echo ""
+    echo "# Gaming Mode bindings - added by installation script"
+    echo "windowrulev2 = float, class:($terminal_class)"
+    echo "windowrulev2 = size 800 600, class:($terminal_class)"
+    echo "windowrulev2 = center, class:($terminal_class)"
+    echo "windowrulev2 = pin, class:($terminal_class)"
+    if [ "$bind_style" = "bindd" ]; then
+      echo "bindd = SUPER SHIFT, S, Steam Gaming Mode, exec, $terminal_cmd $SWITCH_BIN"
+      echo "bindd = SUPER SHIFT, R, Exit Gaming Mode, exec, $RETURN_BIN"
+    else
+      echo "bind = SUPER SHIFT, S, exec, $terminal_cmd $SWITCH_BIN"
+      echo "bind = SUPER SHIFT, R, exec, $RETURN_BIN"
+    fi
+    echo "# End Gaming Mode bindings"
+  } >> "$BINDINGS_CONFIG" || die "failed to add bindings to $BINDINGS_CONFIG"
+
+  ADDED_BINDINGS=1
+
+  # Reload Hyprland config
+  hyprctl reload >/dev/null 2>&1 || info "Hyprland reload may have failed; relog if binds inactive."
+}
+
+check_component() {
+  case "$1" in
+    launcher)
+      [ -x "$SWITCH_BIN" ] && [ -x "$RETURN_BIN" ] || {
+        err "launcher check failed"
+        return 1
+      }
+      ;;
+    shortcuts)
+      if [ ! -f "$BINDINGS_CONFIG" ] || ! grep -q "# Gaming Mode bindings" "$BINDINGS_CONFIG"; then
+        err "shortcuts check failed"
+        return 1
+      fi
+      ;;
+    capabilities)
+      if [[ "${PERFORMANCE_MODE,,}" == "enabled" ]] && command -v gamescope >/dev/null 2>&1; then
+        if ! getcap "$(command -v gamescope)" 2>/dev/null | grep -q 'cap_sys_nice'; then
+          info "gamescope lacks cap_sys_nice; --rt may be ignored."
+        fi
+      fi
+      ;;
+    *)
+      err "unknown component: $1"
+      return 1
+      ;;
+  esac
+}
+
+validate_deployment() {
+  local errors=0
+  for component in launcher shortcuts capabilities; do
+    check_component "$component" || ((errors++))
+  done
+  return $errors
+}
+
+execute_setup() {
+  validate_environment
+  info "Found bindings config at: $BINDINGS_CONFIG"
+
+  # Check if this is a first install or re-run
+  local is_reinstall=false
+  if [ -x "$SWITCH_BIN" ] && [ -x "$RETURN_BIN" ]; then
+    is_reinstall=true
+  fi
+
+  # Only check dependencies on fresh install or if user requests it
+  if [ "$is_reinstall" = false ]; then
+    check_steam_dependencies
+  else
+    info "Gaming mode already installed - skipping dependency check"
+    echo ""
+    read -p "Run dependency check anyway? [y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      check_steam_dependencies
+    fi
+  fi
+
+  # Handle reinstall option
+  if [ -x "$SWITCH_BIN" ] && [ -x "$RETURN_BIN" ]; then
+    # Launchers exist - offer fresh install option
+    info "Gaming mode launchers found"
+
+    echo ""
+    read -p "Gaming mode is already installed. Reinstall? [y/N]: " -n 1 -r
+    echo
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      info "Installation cancelled"
+      exit 0
+    fi
+  fi
+
+  setup_requirements
+  deploy_launchers
+  configure_shortcuts
+  validate_deployment || die "deployment validation failed"
+  echo ""
+  info "✓ Install complete!"
+  info "  Launch: Super+Shift+S"
+  info "  Exit:   Super+Shift+R"
+  info ""
+  info "Binaries:  $TARGET_DIR"
+  info "Bindings:  $BINDINGS_CONFIG"
+  info "Config:    $CONFIG_FILE"
+
+  # Check if user needs to log out/reboot for group changes
+  if [ "$NEEDS_RELOGIN" -eq 1 ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo "  ⚠️  IMPORTANT: LOG OUT REQUIRED"
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  User groups have been updated. You MUST log out and log back in"
+    echo "  (or reboot) for the changes to take effect."
+    echo ""
+    echo "  The gaming mode has been installed, but the group permissions"
+    echo "  will not be active until you log out and log back in."
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    read -r -p "Press Enter to exit (remember to log out/log back in)..."
+  fi
+}
+
+gaming_mode::initialize() { validate_environment; setup_requirements; }
+gaming_mode::install()    { deploy_launchers; }
+gaming_mode::configure()  { configure_shortcuts; validate_deployment || die "validation failed"; }
+
+execute_setup
+
+# Intel Arc (xe driver) Gaming Mode Installer
+# - Detects and differentiates Arc (xe) vs integrated (i915) GPUs
+# - Applies GSK_RENDERER=gl fix for GTK4 apps on Arc GPUs
+# - Installs appropriate drivers for NVIDIA, AMD, Intel Arc, Intel iGPU

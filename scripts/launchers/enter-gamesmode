@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# the-wizard: launch Steam in gamescope "couch mode"
+# - Default: nested gamescope under the current Wayland compositor (Hyprland)
+# - Optional: exclusive TTY mode (no compositor overhead) via ~/.gaming-mode.conf
+
+STATE_DIR="${HOME}/.cache/the-wizard"
+SESSION_FILE="${STATE_DIR}/session.pid"
+LOG_FILE="${STATE_DIR}/enter-gamesmode.log"
+MODE_FILE="${STATE_DIR}/mode"
+VT_FILE="${STATE_DIR}/vt"
+
+mkdir -p "$STATE_DIR"
+
+steam_args="-gamepadui"
+gamesmode_mode="nested" # nested|tty
+gamesmode_vt="2"
+
+usage() {
+  cat <<'EOF'
+enter-gamesmode (the-wizard)
+
+Usage:
+  enter-gamesmode [--mode nested|tty] [--vt N] [--steam-mode gamepadui|bigpicture]
+
+Notes:
+  - nested: runs gamescope under your current compositor (Hyprland). No sudo required.
+  - tty: runs gamescope on a TTY using the DRM backend (no Hyprland compositor overhead).
+         Requires passwordless sudo for /usr/bin/openvt and /usr/bin/chvt (installed by setup.sh).
+EOF
+}
+
+cli_mode=""
+cli_vt=""
+cli_steam_mode=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode) cli_mode="${2:-}"; shift 2 ;;
+    --vt) cli_vt="${2:-}"; shift 2 ;;
+    --steam-mode) cli_steam_mode="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[the-wizard] Unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+if [[ -f "${HOME}/.gaming-mode.conf" ]]; then
+  # shellcheck disable=SC1090
+  source "${HOME}/.gaming-mode.conf" 2>/dev/null || true
+  case "${STEAM_LAUNCH_MODE,,}" in
+    gamepadui) steam_args="-gamepadui" ;;
+    bigpicture|"") steam_args="-tenfoot" ;;
+  esac
+  case "${GAMESMODE_MODE,,}" in
+    tty|exclusive) gamesmode_mode="tty" ;;
+    nested|"") gamesmode_mode="nested" ;;
+  esac
+  if [[ -n "${GAMESMODE_VT:-}" ]]; then
+    gamesmode_vt="${GAMESMODE_VT}"
+  fi
+fi
+
+if [[ -n "$cli_steam_mode" ]]; then
+  case "${cli_steam_mode,,}" in
+    gamepadui) steam_args="-gamepadui" ;;
+    bigpicture) steam_args="-tenfoot" ;;
+    *) echo "[the-wizard] Invalid --steam-mode: $cli_steam_mode" >&2; exit 2 ;;
+  esac
+fi
+
+if [[ -n "$cli_mode" ]]; then
+  case "${cli_mode,,}" in
+    nested) gamesmode_mode="nested" ;;
+    tty|exclusive) gamesmode_mode="tty" ;;
+    *) echo "[the-wizard] Invalid --mode: $cli_mode" >&2; exit 2 ;;
+  esac
+fi
+
+if [[ -n "$cli_vt" ]]; then
+  gamesmode_vt="$cli_vt"
+fi
+
+require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "[the-wizard] Missing: $1" >&2; exit 1; }; }
+require_cmd gamescope
+require_cmd steam
+require_cmd pgrep
+require_cmd pkill
+
+get_display() {
+  # Output: "W H R"
+  local w=1920 h=1080 r=60
+
+  if command -v hyprctl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    local j
+    j="$(hyprctl monitors -j 2>/dev/null || true)"
+    if [[ -n "$j" ]]; then
+      read -r w h r <<<"$(echo "$j" | python3 -c "
+import json,sys
+try:
+  d=json.load(sys.stdin)
+  m=d[0] if d else {}
+  w=int(m.get('width',1920))
+  h=int(m.get('height',1080))
+  rr=float(m.get('refreshRate',60))
+  r=int(round(rr))
+  print(w,h,r)
+except Exception:
+  print('1920 1080 60')
+")"
+    fi
+  fi
+
+  echo "$w $h $r"
+}
+
+read -r out_w out_h out_r <<<"$(get_display)"
+
+# Prefer a lower internal render res, scaled to native output.
+game_w="$out_w"
+game_h="$out_h"
+if [[ "$out_w" -ge 1920 ]]; then
+  if (( out_w * 10 == out_h * 16 )); then
+    game_w=1280
+    game_h=800
+  else
+    game_w=1280
+    game_h=720
+  fi
+fi
+
+hypridle_was_running="0"
+if pgrep -x hypridle >/dev/null 2>&1; then
+  hypridle_was_running="1"
+  pkill hypridle 2>/dev/null || true
+fi
+echo "$hypridle_was_running" > "${STATE_DIR}/hypridle_was_running"
+
+{
+  echo "[$(date -Is)] enter-gamesmode start"
+  echo "steam_args=${steam_args}"
+  echo "mode=${gamesmode_mode} vt=${gamesmode_vt}"
+  echo "output=${out_w}x${out_h}@${out_r} internal=${game_w}x${game_h}"
+  echo "env: WAYLAND_DISPLAY=${WAYLAND_DISPLAY-} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR-} DISPLAY=${DISPLAY-} XDG_SESSION_TYPE=${XDG_SESSION_TYPE-}"
+} >>"$LOG_FILE" 2>/dev/null || true
+
+# If Steam is already running, request a clean shutdown so it doesn't "reuse" the existing instance.
+if pgrep -x steam >/dev/null 2>&1; then
+  steam -shutdown >>"$LOG_FILE" 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x steam >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+fi
+
+echo "$gamesmode_mode" > "$MODE_FILE" 2>/dev/null || true
+echo "$gamesmode_vt" > "$VT_FILE" 2>/dev/null || true
+
+base_gamescope_args=(
+  -e
+  --keep-alive
+  -f
+  -w "$game_w" -h "$game_h"
+  -W "$out_w" -H "$out_h"
+  -r "$out_r"
+  --force-grab-cursor
+  --force-windows-fullscreen
+)
+
+if [[ "$gamesmode_mode" == "tty" ]]; then
+  # Exclusive DRM gamescope (no compositor overhead) by launching on a TTY.
+  require_cmd openvt
+  require_cmd chvt
+  require_cmd fgconsole
+
+  current_vt="$(fgconsole 2>/dev/null || echo "1")"
+  target_vt="$gamesmode_vt"
+
+  {
+    echo "[$(date -Is)] mode=tty current_vt=${current_vt} target_vt=${target_vt}"
+    echo "note: tty mode requires passwordless sudo for openvt/chvt (or run manually and authenticate once)"
+  } >>"$LOG_FILE" 2>/dev/null || true
+
+  # Best-effort ensure Steam is down.
+  steam -shutdown >>"$LOG_FILE" 2>&1 || true
+  sleep 1
+  pkill -x steam 2>/dev/null || true
+
+  sudo -n true >/dev/null 2>&1 || {
+    echo "[the-wizard] tty mode requires passwordless sudo for openvt/chvt (install sudoers drop-in via setup.sh)." >&2
+    exit 1
+  }
+
+  sudo openvt -c "$target_vt" -s -f -- bash -lc "
+    set -euo pipefail
+    exec gamescope --backend drm ${base_gamescope_args[*]} -- steam ${steam_args}
+  " >>"$LOG_FILE" 2>&1 &
+  openvt_pid=$!
+  echo "$openvt_pid" > "$SESSION_FILE" 2>/dev/null || true
+
+  (
+    wait "$openvt_pid" || true
+    sudo chvt "$current_vt" >/dev/null 2>&1 || true
+  ) >/dev/null 2>&1 &
+  exit 0
+fi
+
+# Nested mode: Wayland backend tends to behave best under Hyprland; SDL is a fallback.
+primary_backend=(--backend wayland --expose-wayland --allow-deferred-backend)
+fallback_backend=(--backend sdl -b)
+
+{
+  echo "primary_backend=${primary_backend[*]}"
+  echo "fallback_backend=${fallback_backend[*]}"
+  echo "base_gamescope_args=${base_gamescope_args[*]}"
+} >>"$LOG_FILE" 2>/dev/null || true
+
+setsid gamescope "${primary_backend[@]}" "${base_gamescope_args[@]}" -- steam ${steam_args} >>"$LOG_FILE" 2>&1 &
+gs_pid=$!
+echo "$gs_pid" > "$SESSION_FILE"
+
+(
+  sleep 2
+  if ! kill -0 "$gs_pid" 2>/dev/null; then
+    echo "[$(date -Is)] gamescope died within 2s; retrying with ${fallback_backend[*]}" >>"$LOG_FILE" 2>/dev/null || true
+    setsid gamescope "${fallback_backend[@]}" "${base_gamescope_args[@]}" -- steam ${steam_args} >>"$LOG_FILE" 2>&1 &
+    echo "$!" > "$SESSION_FILE" 2>/dev/null || true
+  fi
+) >/dev/null 2>&1 &
+
+exit 0
+
+

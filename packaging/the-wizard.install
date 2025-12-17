@@ -1,0 +1,27 @@
+post_install() {
+  cat <<'EOF'
+the-wizard installed.
+
+Next step (required):
+  Run: the-wizard setup
+
+This will:
+  - install user launchers under ~/.local/share/steam-launcher/
+  - write a Hyprland include under ~/.config/hypr/conf.d/the-wizard.conf
+  - add a 'source = ... # the-wizard:source' line to ~/.config/hypr/hyprland.conf (if needed)
+
+Default hotkeys (can be changed later):
+  - Super+Shift+S : enter couch mode (Steam in gamescope)
+  - Super+Shift+R : exit couch mode (quit Steam + gamescope)
+
+Optional: exclusive (no compositor overhead) TTY mode:
+  - create ~/.gaming-mode.conf with: GAMESMODE_MODE=tty
+  - re-run: the-wizard setup (to install the sudoers drop-in)
+EOF
+}
+
+post_upgrade() {
+  post_install
+}
+
+

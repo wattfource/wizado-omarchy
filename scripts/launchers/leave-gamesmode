@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# the-wizard: exit gamescope "couch mode" and return to desktop
+
+STATE_DIR="${HOME}/.cache/the-wizard"
+SESSION_FILE="${STATE_DIR}/session.pid"
+MODE_FILE="${STATE_DIR}/mode"
+
+mode="nested"
+if [[ -f "$MODE_FILE" ]]; then
+  mode="$(cat "$MODE_FILE" 2>/dev/null || echo "nested")"
+fi
+
+# Always stop Steam cleanly first, so switching between Wayland and gamescope is reliable.
+if command -v steam >/dev/null 2>&1; then
+  if pgrep -x steam >/dev/null 2>&1; then
+    steam -shutdown >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      pgrep -x steam >/dev/null 2>&1 || break
+      sleep 0.5
+    done
+  fi
+fi
+
+# Best-effort cleanup if Steam is stubborn.
+pkill -x steam 2>/dev/null || true
+pkill -x steamwebhelper 2>/dev/null || true
+
+if [[ -f "$SESSION_FILE" ]]; then
+  pid="$(cat "$SESSION_FILE" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4; do
+      sleep 0.5
+      kill -0 "$pid" 2>/dev/null || break
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+fi
+
+# In tty mode, we don't reliably own the gamescope PID; try a best-effort kill.
+if [[ "$mode" == "tty" ]]; then
+  pkill -x gamescope 2>/dev/null || true
+fi
+
+if [[ -f "${STATE_DIR}/hypridle_was_running" ]]; then
+  was="$(cat "${STATE_DIR}/hypridle_was_running" 2>/dev/null || echo "0")"
+  if [[ "$was" == "1" ]] && command -v hypridle >/dev/null 2>&1; then
+    if ! pgrep -x hypridle >/dev/null 2>&1; then
+      nohup hypridle >/dev/null 2>&1 &
+      disown || true
+    fi
+  fi
+fi
+
+rm -f "$SESSION_FILE" 2>/dev/null || true
+exit 0
+
+

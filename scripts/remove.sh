@@ -50,7 +50,7 @@ remove_hypr_source_line() {
     return 0
   fi
   # Remove only the line we added (marked).
-  run sed -i '/the-wizard:source/d' "$config_path"
+  run sed -i '/wizado:source/d' "$config_path"
 }
 
 main() {

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# the-wizard: exit gamescope "couch mode" and return to desktop
+# wizado: exit gamescope "couch mode" and return to desktop
 
-STATE_DIR="${HOME}/.cache/the-wizard"
+STATE_DIR="${HOME}/.cache/wizado"
 SESSION_FILE="${STATE_DIR}/session.pid"
 MODE_FILE="${STATE_DIR}/mode"
 

@@ -4,27 +4,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/license.sh
+source "$SCRIPT_DIR/lib/license.sh"
 
 TARGET_DIR="${HOME}/.local/share/steam-launcher"
 SWITCH_BIN="${TARGET_DIR}/enter-gamesmode"
 RETURN_BIN="${TARGET_DIR}/leave-gamesmode"
+MENU_BIN="${TARGET_DIR}/wizado-menu"
 
 HYPR_DIR="${HOME}/.config/hypr"
 HYPR_MAIN_CONFIG="${HYPR_DIR}/hyprland.conf"
 HYPR_INCLUDE_DIR="${HYPR_DIR}/conf.d"
-HYPR_INCLUDE_FILE="${HYPR_INCLUDE_DIR}/the-wizard.conf"
-HYPR_SOURCE_LINE="source = ${HYPR_INCLUDE_FILE} # the-wizard:source"
+HYPR_INCLUDE_FILE="${HYPR_INCLUDE_DIR}/wizado.conf"
+HYPR_SOURCE_LINE="source = ${HYPR_INCLUDE_FILE} # wizado:source"
 
 ENV_DIR="${HOME}/.config/environment.d"
 INTEL_ARC_ENV_FILE="${ENV_DIR}/10-intel-arc-gtk.conf"
 
 SUDOERS_DIR="/etc/sudoers.d"
-GAMESMODE_SUDOERS_FILE="${SUDOERS_DIR}/the-wizard-gamesmode"
+GAMESMODE_SUDOERS_FILE="${SUDOERS_DIR}/wizado-gamesmode"
 
 WAYBAR_DIR="${HOME}/.config/waybar"
 WAYBAR_CONFIG_JSONC="${WAYBAR_DIR}/config.jsonc"
 WAYBAR_SCRIPTS_DIR="${WAYBAR_DIR}/scripts"
-WAYBAR_WIZARD_STATUS_SCRIPT="${WAYBAR_SCRIPTS_DIR}/the-wizard-status.sh"
+WAYBAR_WIZARD_STATUS_SCRIPT="${WAYBAR_SCRIPTS_DIR}/wizado-status.sh"
 
 INSTALLER_STARTED=0
 
@@ -131,7 +134,7 @@ ensure_multilib_enabled() {
   warn "Multilib repository is NOT enabled, but is required for Steam (32-bit libraries)."
   confirm_or_die "Enable multilib in /etc/pacman.conf now?"
 
-  local backup="/etc/pacman.conf.backup.the-wizard.$(date +%Y%m%d%H%M%S)"
+  local backup="/etc/pacman.conf.backup.wizado.$(date +%Y%m%d%H%M%S)"
   run_sudo cp /etc/pacman.conf "$backup" || die "Failed to backup /etc/pacman.conf"
   log "Backed up /etc/pacman.conf to: $backup"
 
@@ -155,24 +158,95 @@ setup_intel_arc_gtk_workaround() {
 
   if [[ -f "$INTEL_ARC_ENV_FILE" ]] && grep -q "^GSK_RENDERER=" "$INTEL_ARC_ENV_FILE" 2>/dev/null; then
     log "Intel Arc GTK workaround already present: $INTEL_ARC_ENV_FILE"
-    return 0
-  fi
-
-  log "Configuring Intel Arc GTK4 workaround (GSK_RENDERER=gl)"
-  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-    log "DRY-RUN: write $INTEL_ARC_ENV_FILE"
   else
-    cat >"$INTEL_ARC_ENV_FILE" <<'EOF'
+    log "Configuring Intel Arc GTK4 workaround (GSK_RENDERER=gl)"
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      log "DRY-RUN: write $INTEL_ARC_ENV_FILE"
+    else
+      cat >"$INTEL_ARC_ENV_FILE" <<'EOF'
 # Intel Arc GTK4 Rendering Fix
-# Added by the-wizard
+# Added by wizado
 #
 # Fixes visual glitches in some GTK4 apps on Wayland with Intel Arc GPUs.
 GSK_RENDERER=gl
 EOF
+    fi
   fi
-
+  # Always record it so we can remove it later
   record_installed_item "file:${INTEL_ARC_ENV_FILE}"
   warn "Intel Arc GTK fix installed. You may need to log out and log back in."
+}
+
+check_user_groups() {
+  local missing_groups=()
+  
+  if ! groups | grep -q '\bvideo\b'; then
+    missing_groups+=("video")
+  fi
+  
+  if ! groups | grep -q '\binput\b'; then
+    missing_groups+=("input")
+  fi
+  
+  if ((${#missing_groups[@]} == 0)); then
+    log "User groups (video, input): OK"
+    return 0
+  fi
+  
+  warn "User '$USER' is missing from groups: ${missing_groups[*]}"
+  warn "These are required for GPU access and controller support."
+  confirm_or_die "Add user '$USER' to groups ${missing_groups[*]}?"
+  
+  local groups_csv
+  groups_csv=$(IFS=,; echo "${missing_groups[*]}")
+  
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: sudo usermod -aG $groups_csv $USER"
+  else
+    run_sudo usermod -aG "$groups_csv" "$USER" || die "Failed to add user to groups"
+    warn "User added to groups. You MUST log out and log back in for this to take effect."
+  fi
+}
+
+setup_performance_rules() {
+  local rule_file="/etc/udev/rules.d/99-gaming-performance.rules"
+  
+  if [[ -f "$rule_file" ]]; then
+    log "Performance udev rules already present."
+    return 0
+  fi
+  
+  warn "Optional: install udev rules for passwordless CPU/GPU performance control."
+  confirm_or_die "Install 99-gaming-performance.rules?"
+  
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: write $rule_file"
+    return 0
+  fi
+  
+  # Note: logic adapted from original install script
+  run_sudo bash -c "cat >'$rule_file' <<'EOF'
+# Gaming Mode Performance Control Rules
+# Allow users to modify CPU governor and GPU performance settings without sudo
+
+# CPU governor control (all CPUs)
+KERNEL==\"cpu[0-9]*\", SUBSYSTEM==\"cpu\", ACTION==\"add\", RUN+=\"/bin/chmod 666 /sys/devices/system/cpu/%k/cpufreq/scaling_governor\"
+
+# AMD GPU performance control
+KERNEL==\"card[0-9]\", SUBSYSTEM==\"drm\", DRIVERS==\"amdgpu\", ACTION==\"add\", RUN+=\"/bin/chmod 666 /sys/class/drm/%k/device/power_dpm_force_performance_level\"
+
+# Intel GPU frequency control (i915 driver)
+KERNEL==\"card[0-9]\", SUBSYSTEM==\"drm\", DRIVERS==\"i915\", ACTION==\"add\", RUN+=\"/bin/chmod 666 /sys/class/drm/%k/gt_boost_freq_mhz\"
+KERNEL==\"card[0-9]\", SUBSYSTEM==\"drm\", DRIVERS==\"i915\", ACTION==\"add\", RUN+=\"/bin/chmod 666 /sys/class/drm/%k/gt_min_freq_mhz\"
+KERNEL==\"card[0-9]\", SUBSYSTEM==\"drm\", DRIVERS==\"i915\", ACTION==\"add\", RUN+=\"/bin/chmod 666 /sys/class/drm/%k/gt_max_freq_mhz\"
+EOF"
+
+  log "Reloading udev rules"
+  run_sudo udevadm control --reload-rules
+  run_sudo udevadm trigger --subsystem-match=cpu --subsystem-match=drm
+  
+  record_installed_item "file:$rule_file"
+  warn "Performance rules installed."
 }
 
 maybe_grant_gamescope_cap() {
@@ -240,6 +314,14 @@ write_launchers() {
   fi
   record_installed_item "file:${RETURN_BIN}"
 
+  # wizado-menu
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: install ${launcher_src_dir}/wizado-menu -> ${MENU_BIN}"
+  else
+    install -Dm755 "${launcher_src_dir}/wizado-menu" "$MENU_BIN" || die "Failed to install: $MENU_BIN"
+  fi
+  record_installed_item "file:${MENU_BIN}"
+
   # Wizard intentionally removed (user requested couch-mode only).
 }
 
@@ -259,7 +341,7 @@ maybe_install_gamesmode_sudoers() {
   fi
 
   run_sudo bash -lc "cat >'${GAMESMODE_SUDOERS_FILE}' <<'EOF'
-# Added by the-wizard for optional exclusive TTY gamescope mode.
+# Added by wizado for optional exclusive TTY gamescope mode.
 # Allows Hyprland hotkeys to switch VTs without a password prompt.
 ${username} ALL=(root) NOPASSWD: /usr/bin/openvt, /usr/bin/chvt
 EOF
@@ -270,6 +352,24 @@ visudo -cf '${GAMESMODE_SUDOERS_FILE}'
   record_installed_item "file:${GAMESMODE_SUDOERS_FILE}"
 }
 
+detect_terminal() {
+  # Returns: terminal_cmd, or empty if none found
+  local terms=("ghostty" "alacritty" "kitty" "foot" "gnome-terminal" "konsole")
+  for t in "${terms[@]}"; do
+    if command -v "$t" >/dev/null 2>&1; then
+      if [[ "$t" == "gnome-terminal" ]]; then
+        echo "$t --"
+      elif [[ "$t" == "konsole" ]]; then
+        echo "$t -e"
+      else
+        echo "$t -e" # alacritty, kitty, foot, ghostty all support -e
+      fi
+      return 0
+    fi
+  done
+  echo ""
+}
+
 write_hypr_include() {
   mkdir -p "$HYPR_INCLUDE_DIR" || die "Failed to create: $HYPR_INCLUDE_DIR"
 
@@ -277,6 +377,13 @@ write_hypr_include() {
   bindings_file="$(detect_bindings_config_file)"
   if [[ -z "$bindings_file" ]]; then
     die "Could not find Hypr config (expected under: ${HYPR_DIR})"
+  fi
+
+  local term_cmd
+  term_cmd="$(detect_terminal)"
+  if [[ -z "$term_cmd" ]]; then
+     term_cmd="alacritty -e" # Fallback
+     warn "No supported terminal found. Defaulting to: $term_cmd"
   fi
 
   # Detect bind style based on existing config.
@@ -292,19 +399,19 @@ write_hypr_include() {
     log "DRY-RUN: write $HYPR_INCLUDE_FILE"
   else
     cat >"$HYPR_INCLUDE_FILE" <<EOF
-# the-wizard Hyprland bindings (Omarchy 3.2)
-# Generated by the-wizard setup.sh
+# wizado Hyprland bindings (Omarchy 3.2)
+# Generated by wizado setup.sh
 EOF
 
     if [[ "$bind_style" == "bindd" ]]; then
       cat >>"$HYPR_INCLUDE_FILE" <<EOF
-bindd = SUPER SHIFT, S, Steam (normal), exec, $SWITCH_BIN --mode nested
+bindd = SUPER SHIFT, S, Steam (normal), exec, $term_cmd $SWITCH_BIN --mode nested
 bindd = SUPER ALT, S, Steam (wizard), exec, $SWITCH_BIN --mode tty
 bindd = SUPER SHIFT, R, Exit Couch Mode, exec, $RETURN_BIN
 EOF
     else
       cat >>"$HYPR_INCLUDE_FILE" <<EOF
-bind = SUPER SHIFT, S, exec, $SWITCH_BIN --mode nested
+bind = SUPER SHIFT, S, exec, $term_cmd $SWITCH_BIN --mode nested
 bind = SUPER ALT, S, exec, $SWITCH_BIN --mode tty
 bind = SUPER SHIFT, R, exec, $RETURN_BIN
 EOF
@@ -317,21 +424,21 @@ maybe_install_waybar_module() {
   [[ -d "$WAYBAR_DIR" ]] || return 0
   mkdir -p "$WAYBAR_SCRIPTS_DIR" || die "Failed to create: $WAYBAR_SCRIPTS_DIR"
 
-  warn "Optional: install a Waybar icon for the-wizard (left-click normal, right-click wizard, middle-click exit)."
+  warn "Optional: install a Waybar icon for wizado (left-click normal, right-click wizard, middle-click exit)."
   confirm_or_die "Install Waybar script at ${WAYBAR_WIZARD_STATUS_SCRIPT} (and patch config.jsonc if present)?"
 
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
     log "DRY-RUN: install waybar script"
   else
-    install -Dm755 "${SCRIPT_DIR}/waybar/the-wizard-status.sh" "$WAYBAR_WIZARD_STATUS_SCRIPT" || die "Failed to install: $WAYBAR_WIZARD_STATUS_SCRIPT"
+    install -Dm755 "${SCRIPT_DIR}/waybar/wizado-status.sh" "$WAYBAR_WIZARD_STATUS_SCRIPT" || die "Failed to install: $WAYBAR_WIZARD_STATUS_SCRIPT"
   fi
   record_installed_item "file:${WAYBAR_WIZARD_STATUS_SCRIPT}"
 
   [[ -f "$WAYBAR_CONFIG_JSONC" ]] || return 0
 
   # Patch config.jsonc in an idempotent way (with backup).
-  if grep -q '"custom/the-wizard"' "$WAYBAR_CONFIG_JSONC" 2>/dev/null; then
-    log "Waybar already configured for custom/the-wizard"
+  if grep -q '"custom/wizado"' "$WAYBAR_CONFIG_JSONC" 2>/dev/null; then
+    log "Waybar already configured for custom/wizado"
     return 0
   fi
 
@@ -341,42 +448,57 @@ maybe_install_waybar_module() {
     return 0
   fi
 
-  cp -a "$WAYBAR_CONFIG_JSONC" "${WAYBAR_CONFIG_JSONC}.bak.the-wizard.$(date +%Y%m%d%H%M%S)" || die "Failed to backup waybar config"
+  cp -a "$WAYBAR_CONFIG_JSONC" "${WAYBAR_CONFIG_JSONC}.bak.wizado.$(date +%Y%m%d%H%M%S)" || die "Failed to backup waybar config"
 
   # 1) Add module to modules-left after custom/omarchy if present, else append.
-  python3 - <<'PY'
-import json, re, pathlib, sys
+  python3 - <<PY
+import json, re, pathlib, sys, shutil
 
 path = pathlib.Path.home() / ".config/waybar/config.jsonc"
-raw = path.read_text(encoding="utf-8")
 
-# Very small jsonc stripper (removes // comments). Omarchy config.jsonc is plain JSON today.
-raw2 = re.sub(r"//.*?$", "", raw, flags=re.M)
-cfg = json.loads(raw2)
+def get_terminal_cmd():
+    # Helper to find a terminal command (basic version of bash logic)
+    terms = ["ghostty", "alacritty", "kitty", "foot", "gnome-terminal", "konsole"]
+    for t in terms:
+        if shutil.which(t):
+            if t == "gnome-terminal": return t + " --"
+            if t == "konsole": return t + " -e"
+            return t + " -e"
+    return "alacritty -e"
 
-def inject_module(arr):
-    if "custom/the-wizard" in arr:
-        return arr
-    if "custom/omarchy" in arr:
-        i = arr.index("custom/omarchy") + 1
-        return arr[:i] + ["custom/the-wizard"] + arr[i:]
-    return arr + ["custom/the-wizard"]
+try:
+    raw = path.read_text(encoding="utf-8")
+    # Very small jsonc stripper (removes // comments). Omarchy config.jsonc is plain JSON today.
+    raw2 = re.sub(r"//.*?$", "", raw, flags=re.M)
+    cfg = json.loads(raw2)
 
-cfg["modules-left"] = inject_module(cfg.get("modules-left", []))
+    def inject_module(arr):
+        if "custom/wizado" in arr:
+            return arr
+        if "custom/omarchy" in arr:
+            i = arr.index("custom/omarchy") + 1
+            return arr[:i] + ["custom/wizado"] + arr[i:]
+        return arr + ["custom/wizado"]
 
-cfg["custom/the-wizard"] = {
-    "format": "{icon}",
-    "return-type": "json",
-    "exec": str(pathlib.Path.home() / ".config/waybar/scripts/the-wizard-status.sh"),
-    "interval": 2,
-    "on-click": str(pathlib.Path.home() / ".local/share/steam-launcher/enter-gamesmode") + " --mode nested",
-    "on-click-right": str(pathlib.Path.home() / ".local/share/steam-launcher/enter-gamesmode") + " --mode tty",
-    "on-click-middle": str(pathlib.Path.home() / ".local/share/steam-launcher/leave-gamesmode"),
-    "tooltip": True
-}
+    cfg["modules-left"] = inject_module(cfg.get("modules-left", []))
 
-out = json.dumps(cfg, indent=2)
-path.write_text(out + "\n", encoding="utf-8")
+    term_cmd = get_terminal_cmd()
+
+    cfg["custom/wizado"] = {
+        "format": "{icon}",
+        "return-type": "json",
+        "exec": str(pathlib.Path.home() / ".config/waybar/scripts/wizado-status.sh"),
+        "interval": 2,
+        "on-click": term_cmd + " " + str(pathlib.Path.home() / ".local/share/steam-launcher/wizado-menu"),
+        "on-click-right": str(pathlib.Path.home() / ".local/share/steam-launcher/enter-gamesmode") + " --mode tty",
+        "on-click-middle": str(pathlib.Path.home() / ".local/share/steam-launcher/leave-gamesmode"),
+        "tooltip": True
+    }
+
+    out = json.dumps(cfg, indent=2)
+    path.write_text(out + "\n", encoding="utf-8")
+except Exception as e:
+    print(f"Skipping Waybar patch due to error: {e}", file=sys.stderr)
 PY
 }
 
@@ -413,6 +535,8 @@ main() {
     exit 0
   fi
 
+  # check_license
+
 require_cmd pacman
 require_cmd hyprctl
 
@@ -432,11 +556,27 @@ install_pacman_packages pciutils
 
 local -a required_pkgs=(
   steam
+  python
   xdg-user-dirs
   mesa
   lib32-mesa
   vulkan-icd-loader
   lib32-vulkan-icd-loader
+  mesa-utils
+  lib32-systemd
+  lib32-glibc
+  lib32-gcc-libs
+  lib32-libx11
+  lib32-libxss
+  lib32-alsa-plugins
+  lib32-libpulse
+  lib32-openal
+  lib32-nss
+  lib32-libcups
+  lib32-sdl2
+  lib32-freetype2
+  lib32-fontconfig
+  ttf-liberation
 )
 
 local gpu_vendor
@@ -445,13 +585,49 @@ log "Detected GPU vendor: $gpu_vendor"
 
 case "$gpu_vendor" in
   nvidia)
-    required_pkgs+=(nvidia-utils lib32-nvidia-utils)
+    required_pkgs+=(
+      nvidia-utils 
+      lib32-nvidia-utils 
+      nvidia-settings 
+      libva-nvidia-driver
+    )
+    # Optional check for DKMS modules handled via warning/manual install if missing
     ;;
   amd)
-    required_pkgs+=(vulkan-radeon lib32-vulkan-radeon)
+    required_pkgs+=(
+      vulkan-radeon 
+      lib32-vulkan-radeon
+      libva-mesa-driver
+      lib32-libva-mesa-driver
+      mesa-vdpau
+      lib32-mesa-vdpau
+    )
     ;;
   intel)
-    required_pkgs+=(vulkan-intel lib32-vulkan-intel)
+    local intel_type
+    intel_type="$(detect_intel_gpu_type)"
+    
+    if [[ "$intel_type" == "arc" ]]; then
+      # Intel Arc discrete
+      required_pkgs+=(
+        vulkan-intel
+        lib32-vulkan-intel
+        intel-compute-runtime
+        intel-gpu-tools
+      )
+      # level-zero-loader is good if available, but might be optional
+    else
+      # Integrated or older
+      required_pkgs+=(
+        vulkan-intel 
+        lib32-vulkan-intel
+        intel-media-driver
+        libva-intel-driver
+        lib32-libva-intel-driver
+        intel-compute-runtime
+        intel-gpu-tools
+      )
+    fi
     ;;
   *)
     warn "GPU vendor not detected. Installing both vulkan-intel and vulkan-radeon for coverage."
@@ -459,14 +635,29 @@ case "$gpu_vendor" in
     ;;
 esac
 
+# Common Vulkan layers
+required_pkgs+=(vulkan-mesa-layers)
+
 install_pacman_packages "${required_pkgs[@]}"
 
-  local -a recommended_pkgs=(gamescope gamemode mangohud libcap vulkan-tools kbd)
-warn "Recommended packages: ${recommended_pkgs[*]}"
+  local -a recommended_deps=(
+    gamescope 
+    gamemode 
+    lib32-gamemode 
+    mangohud 
+    lib32-mangohud 
+    libcap 
+    vulkan-tools 
+    kbd
+    wine
+  )
+warn "Recommended packages: ${recommended_deps[*]}"
 confirm_or_die "Install recommended packages?"
-install_pacman_packages "${recommended_pkgs[@]}"
+install_pacman_packages "${recommended_deps[@]}"
 
 setup_intel_arc_gtk_workaround
+check_user_groups
+setup_performance_rules
 
 maybe_grant_gamescope_cap
   maybe_install_gamesmode_sudoers

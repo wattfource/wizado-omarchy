@@ -1,14 +1,14 @@
 post_install() {
   cat <<'EOF'
-the-wizard installed.
+wizado installed.
 
 Next step (required):
-  Run: the-wizard setup
+  Run: wizado setup
 
 This will:
   - install user launchers under ~/.local/share/steam-launcher/
-  - write a Hyprland include under ~/.config/hypr/conf.d/the-wizard.conf
-  - add a 'source = ... # the-wizard:source' line to ~/.config/hypr/hyprland.conf (if needed)
+  - write a Hyprland include under ~/.config/hypr/conf.d/wizado.conf
+  - add a 'source = ... # wizado:source' line to ~/.config/hypr/hyprland.conf (if needed)
 
 Default hotkeys (can be changed later):
   - Super+Shift+S : enter couch mode (Steam in gamescope)
@@ -16,7 +16,7 @@ Default hotkeys (can be changed later):
 
 Optional: exclusive (no compositor overhead) TTY mode:
   - create ~/.gaming-mode.conf with: GAMESMODE_MODE=tty
-  - re-run: the-wizard setup (to install the sudoers drop-in)
+  - re-run: wizado setup (to install the sudoers drop-in)
 EOF
 }
 

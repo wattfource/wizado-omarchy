@@ -4,7 +4,7 @@
 # When you're ready, we'll replace this template with a real PKGBUILD, .SRCINFO,
 # and proper install/remove/update behavior that matches your scripts.
 
-pkgname=the-wizard
+pkgname=wizado
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="The Wizard (Steam launcher helper) - installer scaffold"

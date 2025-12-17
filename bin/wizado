@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/usr/share/the-wizard"
+# Detect if running from source or installed
+if [[ -d "./scripts" ]]; then
+  ROOT="."
+else
+  ROOT="/usr/share/wizado"
+fi
 
 usage() {
   cat <<'EOF'
-the-wizard
+wizado
 
 Usage:
-  the-wizard setup [--yes|-y] [--dry-run]
-  the-wizard update [--yes|-y] [--dry-run] [--system]
-  the-wizard remove [--yes|-y] [--dry-run]
+  wizado setup [--yes|-y] [--dry-run]
+  wizado update [--yes|-y] [--dry-run] [--system]
+  wizado remove [--yes|-y] [--dry-run]
 
 Notes:
   - `setup` writes user files (launchers + Hyprland include) under your $HOME.

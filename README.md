@@ -1,4 +1,4 @@
-## the-wizard
+## wizado
 
 Scaffold for an Arch Linux (and future AUR) “game launcher” installer project.
 
@@ -15,9 +15,7 @@ Scaffold for an Arch Linux (and future AUR) “game launcher” installer projec
 Run from the repo root:
 
 ```bash
-./scripts/setup.sh
-./scripts/update.sh
-./scripts/remove.sh
+bin/wizado setup
 ```
 
 ### Notes

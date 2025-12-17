@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_NAME="the-wizard"
+PROJECT_NAME="wizado"
 
 log() {
   # shellcheck disable=SC2059

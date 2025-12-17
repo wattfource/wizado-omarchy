@@ -394,6 +394,13 @@ write_hypr_include() {
     fi
   fi
 
+  if [[ -f "$HYPR_INCLUDE_FILE" ]]; then
+    log "Hypr include already exists: $HYPR_INCLUDE_FILE"
+    log "Skipping overwrite to preserve user keybindings."
+    record_installed_item "file:${HYPR_INCLUDE_FILE}"
+    return 0
+  fi
+
   log "Writing Hypr include: $HYPR_INCLUDE_FILE (bind style: $bind_style)"
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
     log "DRY-RUN: write $HYPR_INCLUDE_FILE"
@@ -405,13 +412,15 @@ EOF
 
     if [[ "$bind_style" == "bindd" ]]; then
       cat >>"$HYPR_INCLUDE_FILE" <<EOF
-bindd = SUPER SHIFT, S, Steam (normal), exec, $term_cmd $SWITCH_BIN --mode nested
+unbind = SUPER ALT, S
+bindd = SUPER SHIFT, S, Steam (normal), exec, $SWITCH_BIN --mode nested
 bindd = SUPER ALT, S, Steam (wizard), exec, $SWITCH_BIN --mode tty
 bindd = SUPER SHIFT, R, Exit Couch Mode, exec, $RETURN_BIN
 EOF
     else
       cat >>"$HYPR_INCLUDE_FILE" <<EOF
-bind = SUPER SHIFT, S, exec, $term_cmd $SWITCH_BIN --mode nested
+unbind = SUPER ALT, S
+bind = SUPER SHIFT, S, exec, $SWITCH_BIN --mode nested
 bind = SUPER ALT, S, exec, $SWITCH_BIN --mode tty
 bind = SUPER SHIFT, R, exec, $RETURN_BIN
 EOF
@@ -424,7 +433,7 @@ maybe_install_waybar_module() {
   [[ -d "$WAYBAR_DIR" ]] || return 0
   mkdir -p "$WAYBAR_SCRIPTS_DIR" || die "Failed to create: $WAYBAR_SCRIPTS_DIR"
 
-  warn "Optional: install a Waybar icon for wizado (left-click normal, right-click wizard, middle-click exit)."
+  warn "Optional: install a Waybar icon for wizado (left-click to open menu)."
   confirm_or_die "Install Waybar script at ${WAYBAR_WIZARD_STATUS_SCRIPT} (and patch config.jsonc if present)?"
 
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
@@ -475,23 +484,23 @@ try:
     def inject_module(arr):
         if "custom/wizado" in arr:
             return arr
-        if "custom/omarchy" in arr:
-            i = arr.index("custom/omarchy") + 1
-            return arr[:i] + ["custom/wizado"] + arr[i:]
+        # Place before bluetooth or network if possible, else append
+        for target in ["bluetooth", "network", "pulseaudio", "cpu", "battery"]:
+             if target in arr:
+                 i = arr.index(target)
+                 return arr[:i] + ["custom/wizado"] + arr[i:]
         return arr + ["custom/wizado"]
 
-    cfg["modules-left"] = inject_module(cfg.get("modules-left", []))
+    cfg["modules-right"] = inject_module(cfg.get("modules-right", []))
 
     term_cmd = get_terminal_cmd()
 
     cfg["custom/wizado"] = {
-        "format": "{icon}",
+        "format": "{}",
         "return-type": "json",
         "exec": str(pathlib.Path.home() / ".config/waybar/scripts/wizado-status.sh"),
         "interval": 2,
         "on-click": term_cmd + " " + str(pathlib.Path.home() / ".local/share/steam-launcher/wizado-menu"),
-        "on-click-right": str(pathlib.Path.home() / ".local/share/steam-launcher/enter-gamesmode") + " --mode tty",
-        "on-click-middle": str(pathlib.Path.home() / ".local/share/steam-launcher/leave-gamesmode"),
         "tooltip": True
     }
 

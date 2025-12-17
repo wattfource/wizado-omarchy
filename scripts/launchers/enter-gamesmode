@@ -47,13 +47,13 @@ done
 if [[ -f "${HOME}/.gaming-mode.conf" ]]; then
   # shellcheck disable=SC1090
   source "${HOME}/.gaming-mode.conf" 2>/dev/null || true
-  case "${STEAM_LAUNCH_MODE,,}" in
-    gamepadui) steam_args="-gamepadui" ;;
-    bigpicture|"") steam_args="-tenfoot" ;;
+  case "${STEAM_LAUNCH_MODE:-}" in
+    gamepadui|GAMEPADUI) steam_args="-gamepadui" ;;
+    bigpicture|BIGPICTURE) steam_args="-tenfoot" ;;
   esac
-  case "${GAMESMODE_MODE,,}" in
-    tty|exclusive) gamesmode_mode="tty" ;;
-    nested|"") gamesmode_mode="nested" ;;
+  case "${GAMESMODE_MODE:-}" in
+    tty|TTY|exclusive|EXCLUSIVE) gamesmode_mode="tty" ;;
+    nested|NESTED) gamesmode_mode="nested" ;;
   esac
   if [[ -n "${GAMESMODE_VT:-}" ]]; then
     gamesmode_vt="${GAMESMODE_VT}"
@@ -120,20 +120,14 @@ except Exception:
 
 read -r out_w out_h out_r <<<"$(get_display)"
 
-# Prefer a lower internal render res, scaled to native output.
-# If custom resolution was not set via config, apply defaults.
-if [[ "${custom_res:-0}" -ne 1 ]]; then
-  game_w="$out_w"
-  game_h="$out_h"
-  if [[ "$out_w" -ge 1920 ]]; then
-    if (( out_w * 10 == out_h * 16 )); then
-      game_w=1280
-      game_h=800
-    else
-      game_w=1280
-      game_h=720
-    fi
-  fi
+# Default to native resolution
+game_w="$out_w"
+game_h="$out_h"
+
+# Only if custom resolution was explicitly set via config, apply it.
+if [[ "${custom_res:-0}" -eq 1 ]]; then
+  # Values were already set above when loading config
+  :
 fi
 
 hypridle_was_running="0"
@@ -221,6 +215,17 @@ fallback_backend=(--backend sdl -b)
   echo "fallback_backend=${fallback_backend[*]}"
   echo "base_gamescope_args=${base_gamescope_args[*]}"
 } >>"$LOG_FILE" 2>/dev/null || true
+
+# Launch gamescope
+# Force-disable potentially conflicting Vulkan layers in the parent environment
+# But ALLOW the gamescope WSI layer to be loaded by gamescope itself
+export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
+export VK_LAYER_PATH="" # Reset custom layer paths
+export VK_INSTANCE_LAYERS="" # Reset instance layers
+
+# Explicitly disable problematic layers by name
+# MangoHud can conflict if loaded twice (once by us, once by implicit layer)
+export DISABLE_MANGOHUD=1 
 
 setsid gamescope "${primary_backend[@]}" "${base_gamescope_args[@]}" -- steam ${steam_args} >>"$LOG_FILE" 2>&1 &
 gs_pid=$!

@@ -5,8 +5,6 @@ pkgdesc="Hyprland hotkey + gamescope Steam couch mode helper (Omarchy/Arch)"
 arch=('any')
 url="https://github.com/REPLACE_ME/wizado"
 license=('MIT')
-conflicts=('the-wizard')
-replaces=('the-wizard')
 depends=('bash' 'curl' 'python')
 optdepends=(
   'steam: Steam client'

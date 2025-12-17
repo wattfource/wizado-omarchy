@@ -28,7 +28,7 @@ if sudo -n true >/dev/null 2>&1; then
   sudo_ready="1"
 fi
 
-icon=""
+icon="🎮"
 class="idle"
 if [[ "$running" == "1" ]]; then
   class="running"
@@ -44,9 +44,7 @@ tooltip_base="Steam Couch Mode
 Status: ${class}
 Mode: ${mode_label}${vt:+ (VT ${vt})}
 
-Left click: Open Menu (Launch/Settings)
-Right click: Launch (wizard / no compositor)
-Middle click: Exit (quit steam + gamescope)"
+Click to open menu"
 
 if [[ "$mode" == "tty" && "$sudo_ready" != "1" ]]; then
   tooltip_base="${tooltip_base}

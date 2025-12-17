@@ -1,24 +1,98 @@
-## wizado
+# Wizado 🧙‍♂️
 
-Scaffold for an Arch Linux (and future AUR) “game launcher” installer project.
+**Wizado** is a "Couch Mode" companion for Hyprland on Arch Linux (specifically targeted at Omarchy). It provides a seamless way to launch Steam in a dedicated `gamescope` session, optimizing your system for gaming performance while keeping your desktop environment intact.
 
-### What’s here
+## Features
 
-- **`scripts/setup.sh`**: install/setup (you will paste your real setup logic here)
-- **`scripts/update.sh`**: update/refresh anything installed by setup
-- **`scripts/remove.sh`**: remove/undo anything installed by setup
-- **`scripts/lib/common.sh`**: shared helpers (logging, root checks, state file)
-- **`.state/`**: local state (tracked in gitignore)
+- 🎮 **Seamless Launcher:** Launch Steam Big Picture / Gamepad UI in an optimized `gamescope` window.
+- ⚡ **Performance Mode:** Auto-applies `gamemode`, real-time scheduling (`cap_sys_nice`), and GPU optimizations (AMD/NVIDIA).
+- 🖥️ **Smart Resolution:** Auto-detects native resolution or allows TUI-based configuration for upscaling (e.g., render at 1080p, output at 4K).
+- ⚙️ **TUI Settings:** Built-in terminal menu for configuration.
+- 🍫 **Waybar Integration:** Adds a gamepad icon to Waybar for mouse-driven launching and status.
+- ⌨️ **Hyprland Bindings:**
+  - `Super + Shift + S`: Launch Steam (Nested/Couch Mode)
+  - `Super + Shift + R`: Exit/Kill Session
 
-### Quick start
+## Installation
 
-Run from the repo root:
+### Local Install (Development / Manual)
+
+If you have cloned the repository and want to install it directly:
 
 ```bash
-bin/wizado setup
+# Run the setup script directly
+./scripts/setup.sh
 ```
 
-### Notes
+This will:
+1. Check and install dependencies (Steam, gamescope, drivers, etc.).
+2. Configure permissions (user groups, udev rules).
+3. Install launcher scripts to `~/.local/share/steam-launcher`.
+4. Add Hyprland bindings and Waybar configuration.
 
-- The scripts are intentionally **minimal** and **safe by default** (explicit `--yes` for non-interactive).
-- `setup.sh` writes an “installed items” state file. `remove.sh` uses it to undo work.
+### Arch Package (Recommended)
+
+To install it as a system package (cleaner removal/updates):
+
+```bash
+# Build and install using makepkg
+makepkg -si
+```
+
+## Updating
+
+To update your installation after pulling new changes:
+
+**Manual Method:**
+```bash
+git pull
+./scripts/setup.sh
+```
+
+**Package Method:**
+```bash
+git pull
+makepkg -si
+```
+
+## Submitting to AUR
+
+Instructions for the package maintainer to submit/update the AUR package.
+
+1. **Update Version:**
+   Edit `PKGBUILD` and update `pkgver` and `pkgrel` if necessary.
+
+2. **Generate Checksums:**
+   If source files changed (though currently it skips sums for local dev), update them:
+   ```bash
+   updpkgsums
+   ```
+
+3. **Generate .SRCINFO:**
+   This is required for the AUR to parse metadata.
+   ```bash
+   makepkg --printsrcinfo > .SRCINFO
+   ```
+
+4. **Test Build:**
+   Ensure it builds in a clean environment.
+   ```bash
+   makepkg -f
+   ```
+
+5. **Push to AUR:**
+   (Assuming you have the AUR git repo cloned)
+   ```bash
+   # Copy PKGBUILD and .SRCINFO to your AUR repo folder
+   cp PKGBUILD .SRCINFO /path/to/wizado-aur/
+   cd /path/to/wizado-aur/
+   git add PKGBUILD .SRCINFO
+   git commit -m "Update to v0.1.x"
+   git push
+   ```
+
+## Usage
+
+- **Launch:** Press `Super + Shift + S` or click the  icon in Waybar.
+- **Settings:** Click the Waybar icon to open the menu, or select "Settings" before launching.
+- **Exit:** Press `Super + Shift + R` or use the "Exit" option in the Steam power menu.

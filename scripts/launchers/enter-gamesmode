@@ -91,6 +91,11 @@ require_cmd steam
 require_cmd pgrep
 require_cmd pkill
 
+gamescope_supports_arg() {
+  local arg="$1"
+  gamescope --help 2>&1 | grep -q -- "$arg"
+}
+
 get_display() {
   # Output: "W H R"
   local w=1920 h=1080 r=60
@@ -147,15 +152,68 @@ echo "$hypridle_was_running" > "${STATE_DIR}/hypridle_was_running"
 
 # If Steam is already running, request a clean shutdown so it doesn't "reuse" the existing instance.
 if pgrep -x steam >/dev/null 2>&1; then
+  echo "[$(date -Is)] Steam is running, attempting clean shutdown..." >>"$LOG_FILE" 2>&1 || true
   steam -shutdown >>"$LOG_FILE" 2>&1 || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -x steam >/dev/null 2>&1 || break
+  
+  # Wait up to 10 seconds for clean shutdown
+  for i in {1..20}; do
+    if ! pgrep -x steam >/dev/null 2>&1; then
+      echo "[$(date -Is)] Steam shut down cleanly." >>"$LOG_FILE" 2>&1 || true
+      break
+    fi
     sleep 0.5
   done
+  
+  # If still running, be more aggressive
+  if pgrep -x steam >/dev/null 2>&1; then
+    echo "[$(date -Is)] Steam still running, using pkill..." >>"$LOG_FILE" 2>&1 || true
+    pkill -x steam 2>/dev/null || true
+    sleep 2
+    pkill -9 -x steam 2>/dev/null || true
+    pkill -9 -x steamwebhelper 2>/dev/null || true
+  fi
 fi
 
 echo "$gamesmode_mode" > "$MODE_FILE" 2>/dev/null || true
 echo "$gamesmode_vt" > "$VT_FILE" 2>/dev/null || true
+
+# Detect GPU and prepare gamescope arguments
+get_gpu_args() {
+  local args=()
+  if command -v lspci >/dev/null 2>&1; then
+    # Prefer NVIDIA if present
+    local nv
+    nv="$(lspci -nn | grep -i "NVIDIA" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])' | head -n1 || true)"
+    if [[ -n "$nv" ]]; then
+      args+=(--prefer-vk-device "$nv")
+      # NVIDIA-specific hack flag only if supported by this gamescope build.
+      if gamescope_supports_arg "--nvidia-hack"; then
+        args+=(--nvidia-hack)
+      else
+        echo "[$(date -Is)] NOTE: gamescope does not support --nvidia-hack; skipping." >>"$LOG_FILE" 2>&1 || true
+      fi
+      
+      # Check for nvidia-drm.modeset=1 (REQUIRED for gamescope TTY mode on NVIDIA)
+      if [[ "$gamesmode_mode" == "tty" ]]; then
+        if ! grep -q "nvidia-drm.modeset=1" /proc/cmdline; then
+           echo "[$(date -Is)] WARNING: nvidia-drm.modeset=1 is missing from kernel parameters!" >>"$LOG_FILE" 2>&1
+           echo "[$(date -Is)] Optimized launch (TTY mode) WILL FAIL on NVIDIA without this." >>"$LOG_FILE" 2>&1
+           echo "[$(date -Is)] Please add nvidia-drm.modeset=1 to your bootloader config." >>"$LOG_FILE" 2>&1
+        fi
+      fi
+    else
+      # Otherwise prefer AMD if present
+      local amd
+      amd="$(lspci -nn | grep -iE "AMD|ATI" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])' | head -n1 || true)"
+      if [[ -n "$amd" ]]; then
+        args+=(--prefer-vk-device "$amd")
+      fi
+    fi
+  fi
+  echo "${args[@]}"
+}
+
+gpu_args=($(get_gpu_args))
 
 base_gamescope_args=(
   -e
@@ -166,7 +224,48 @@ base_gamescope_args=(
   -r "$out_r"
   --force-grab-cursor
   --force-windows-fullscreen
+  "${gpu_args[@]}"
 )
+
+# Consolidation of environment variables to prevent Vulkan layer conflicts
+# and ensure Steam/Gamescope can find necessary files.
+clean_vulkan_env() {
+  # Disable layers that often interfere with Gamescope's own WSI layer
+  export DISABLE_MANGOHUD=1
+  export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
+  export DISABLE_LAYER_NV_OPTIMUS_1=1
+  export DISABLE_VK_LAYER_NV_optimus_1=1
+  export DISABLE_LAYER_MESA_ANTI_LAG=1
+  export NODEVICE_SELECT=1
+  
+  # Disable the Gamescope WSI layer by default in the parent environment.
+  # Gamescope will re-enable it for the child process (Steam/game) as needed.
+  export DISABLE_GAMESCOPE_WSI=1
+  
+  # Reset Vulkan layer paths to prevent accidental loading of global layers
+  export VK_LAYER_PATH=""
+  export VK_INSTANCE_LAYERS=""
+}
+
+# In exclusive TTY mode we must not inherit the desktop compositor's display env.
+clean_display_env_for_tty() {
+  unset DISPLAY
+  unset WAYLAND_DISPLAY
+}
+
+# If TTY mode was requested but passwordless sudo isn't available, fall back to nested
+# (Hypr hotkeys don't surface stderr, so failing hard feels like "nothing happened").
+if [[ "$gamesmode_mode" == "tty" ]]; then
+  if ! sudo -n true >/dev/null 2>&1; then
+    {
+      echo "[$(date -Is)] WARNING: tty mode requested but passwordless sudo is not configured. Falling back to nested."
+    } >>"$LOG_FILE" 2>&1 || true
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send "wizado" "TTY mode needs passwordless sudo (openvt/chvt). Falling back to nested." >/dev/null 2>&1 || true
+    fi
+    gamesmode_mode="nested"
+  fi
+fi
 
 if [[ "$gamesmode_mode" == "tty" ]]; then
   # Exclusive DRM gamescope (no compositor overhead) by launching on a TTY.
@@ -179,33 +278,35 @@ if [[ "$gamesmode_mode" == "tty" ]]; then
 
   {
     echo "[$(date -Is)] mode=tty current_vt=${current_vt} target_vt=${target_vt}"
-    echo "note: tty mode requires passwordless sudo for openvt/chvt (or run manually and authenticate once)"
+    echo "note: tty mode requires passwordless sudo for openvt/chvt"
   } >>"$LOG_FILE" 2>/dev/null || true
 
-  # Best-effort ensure Steam is down.
-  steam -shutdown >>"$LOG_FILE" 2>&1 || true
-  sleep 1
-  pkill -x steam 2>/dev/null || true
-
+  # Passwordless sudo was already checked above; keep a defensive check here too.
   sudo -n true >/dev/null 2>&1 || {
     echo "[wizado] tty mode requires passwordless sudo for openvt/chvt (install sudoers drop-in via setup.sh)." >&2
     exit 1
   }
 
-  # Use su - $USER to avoid running Steam as root, and set XDG_RUNTIME_DIR.
-  # We use -w (wait) so openvt doesn't exit until the command (gamescope) finishes.
-  # We run the whole thing in a background subshell so we can switch back to the original VT after.
-  local user_name="$USER"
-  local user_id
+  user_name="$USER"
   user_id=$(id -u)
 
+  # Launching in a subshell to handle VT switching more reliably
   (
-    sudo openvt -c "$target_vt" -s -f -w -- su - "$user_name" -c "
-      export XDG_RUNTIME_DIR=/run/user/$user_id
-      exec gamescope --backend drm ${base_gamescope_args[*]} -- steam ${steam_args}
-    " >>"$LOG_FILE" 2>&1
+    # Ensure Steam is REALLY gone before we switch VTs
+    pkill -9 -x steam 2>/dev/null || true
+    sleep 1
+
+    echo "[$(date -Is)] Switching to VT ${target_vt}..." >>"$LOG_FILE" 2>&1
     
-    # After gamescope exits, switch back to the desktop VT.
+    # We use a sub-shell command inside openvt to ensure environment and logging are correct
+    local cmd="env PATH=\"$PATH\" HOME=\"$HOME\" USER=\"$user_name\" XDG_RUNTIME_DIR=\"/run/user/$user_id\" XDG_DATA_DIRS=\"/usr/local/share:/usr/share\" DISABLE_MANGOHUD=1 DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1 DISABLE_LAYER_NV_OPTIMUS_1=1 DISABLE_VK_LAYER_NV_optimus_1=1 DISABLE_LAYER_MESA_ANTI_LAG=1 DISABLE_GAMESCOPE_WSI=1 NODEVICE_SELECT=1 VK_LAYER_PATH=\"\" VK_INSTANCE_LAYERS=\"\" DISPLAY= WAYLAND_DISPLAY= gamescope --backend drm ${base_gamescope_args[*]} -- steam ${steam_args}"
+
+    if ! sudo openvt -c "$target_vt" -s -f -w -- sudo -u "$user_name" bash -c "$cmd" >>"$LOG_FILE" 2>&1; then
+      echo "[$(date -Is)] openvt/gamescope failed with exit code $?" >>"$LOG_FILE" 2>&1
+    fi
+    
+    # After gamescope exits or fails, switch back to the desktop VT.
+    echo "[$(date -Is)] Switching back to VT ${current_vt}..." >>"$LOG_FILE" 2>&1
     sleep 1
     sudo chvt "$current_vt" >/dev/null 2>&1 || true
   ) &
@@ -224,15 +325,11 @@ fallback_backend=(--backend sdl -b)
 } >>"$LOG_FILE" 2>/dev/null || true
 
 # Launch gamescope
-# Force-disable potentially conflicting Vulkan layers in the parent environment
-# But ALLOW the gamescope WSI layer to be loaded by gamescope itself
-export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
-export VK_LAYER_PATH="" # Reset custom layer paths
-export VK_INSTANCE_LAYERS="" # Reset instance layers
+clean_vulkan_env
 
-# Explicitly disable problematic layers by name
-# MangoHud can conflict if loaded twice (once by us, once by implicit layer)
-export DISABLE_MANGOHUD=1 
+{
+  echo "[$(date -Is)] nested launch env: WAYLAND_DISPLAY=${WAYLAND_DISPLAY-} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR-}"
+} >>"$LOG_FILE" 2>/dev/null || true
 
 setsid gamescope "${primary_backend[@]}" "${base_gamescope_args[@]}" -- steam ${steam_args} >>"$LOG_FILE" 2>&1 &
 gs_pid=$!
@@ -242,7 +339,8 @@ echo "$gs_pid" > "$SESSION_FILE"
   sleep 2
   if ! kill -0 "$gs_pid" 2>/dev/null; then
     echo "[$(date -Is)] gamescope died within 2s; retrying with ${fallback_backend[*]}" >>"$LOG_FILE" 2>/dev/null || true
-    setsid gamescope "${fallback_backend[@]}" "${base_gamescope_args[@]}" -- steam ${steam_args} >>"$LOG_FILE" 2>&1 &
+    clean_vulkan_env
+    setsid gamescope "${fallback_backend[@]}" "${base_gamescope_args[@]}" -- steam "${steam_args}" >>"$LOG_FILE" 2>&1 &
     echo "$!" > "$SESSION_FILE" 2>/dev/null || true
   fi
 ) >/dev/null 2>&1 &

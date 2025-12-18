@@ -31,6 +31,71 @@ WAYBAR_WIZARD_STATUS_SCRIPT="${WAYBAR_SCRIPTS_DIR}/wizado-status.sh"
 
 INSTALLER_STARTED=0
 
+cleanup_wizado_processes() {
+  # Best-effort cleanup of wizado-launched sessions so installs/updates don't race a running gamescope/Steam.
+  #
+  # Safety goals:
+  # - Prefer graceful Steam shutdown
+  # - Only kill gamescope processes that appear to be running Steam (wizado couch-mode),
+  #   rather than killing arbitrary gamescope sessions the user might be using for other apps.
+  local state_dir="${HOME}/.cache/wizado"
+  local session_file="${state_dir}/session.pid"
+
+  log "Pre-flight: cleaning up any running wizado session (best-effort)"
+
+  # If the installed leave-gamesmode exists, use it (it handles Steam shutdown + PID cleanup).
+  if [[ -x "${RETURN_BIN}" ]]; then
+    "${RETURN_BIN}" >/dev/null 2>&1 || true
+  fi
+
+  # Graceful Steam shutdown (safe even if Steam isn't running).
+  if command -v steam >/dev/null 2>&1; then
+    steam -shutdown >/dev/null 2>&1 || true
+    # Give it a moment to exit cleanly.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      pgrep -x steam >/dev/null 2>&1 || break
+      sleep 0.3
+    done
+  fi
+
+  # If wizado recorded a session PID, try to terminate it first.
+  if [[ -f "$session_file" ]]; then
+    local pid=""
+    pid="$(cat "$session_file" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 0.3
+      kill -0 "$pid" >/dev/null 2>&1 && kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # Clean up any lingering Steam processes (shouldn't "mess up the OS"; worst case Steam relaunches).
+  pkill -x steam >/dev/null 2>&1 || true
+  pkill -x steamwebhelper >/dev/null 2>&1 || true
+
+  # Kill only gamescope instances that look like they're running Steam (wizado couch-mode).
+  # pgrep -af prints: "<pid> <cmdline>"
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      pid="${line%% *}"
+      cmd="${line#* }"
+      # Match wizado-style gamescope invocation: "... gamescope ... -- steam -gamepadui" / "-tenfoot"
+      if echo "$cmd" | grep -Eq -- '(^|[[:space:]])gamescope([[:space:]].*)?[[:space:]]--[[:space:]]steam([[:space:]].*)?(-gamepadui|-tenfoot)'; then
+        kill "$pid" >/dev/null 2>&1 || true
+        sleep 0.2
+        kill -0 "$pid" >/dev/null 2>&1 && kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    done < <(pgrep -af gamescope 2>/dev/null || true)
+  fi
+
+  # If enter-gamesmode itself is still running (e.g., stuck), stop it.
+  pkill -f "${HOME}/.local/share/steam-launcher/enter-gamesmode" >/dev/null 2>&1 || true
+
+  # Don't delete state; let leave-gamesmode manage cleanup. Just ensure we don't keep stale pid around.
+  rm -f "$session_file" >/dev/null 2>&1 || true
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./scripts/setup.sh [--yes|-y] [--dry-run]
@@ -450,10 +515,8 @@ maybe_install_waybar_module() {
   [[ -f "$WAYBAR_CONFIG_JSONC" ]] || return 0
 
   # Patch config.jsonc in an idempotent way (with backup).
-  if grep -q '"custom/wizado"' "$WAYBAR_CONFIG_JSONC" 2>/dev/null; then
-    log "Waybar already configured for custom/wizado"
-    return 0
-  fi
+  # Note: even if custom/wizado already exists, we may need to fix its placement
+  # (e.g., moving it into a collapsed group drawer like group/tray-expander).
 
   warn "Patching Waybar config: ${WAYBAR_CONFIG_JSONC} (will create a backup)."
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
@@ -463,7 +526,8 @@ maybe_install_waybar_module() {
 
   cp -a "$WAYBAR_CONFIG_JSONC" "${WAYBAR_CONFIG_JSONC}.bak.wizado.$(date +%Y%m%d%H%M%S)" || die "Failed to backup waybar config"
 
-  # 1) Add module to modules-left after custom/omarchy if present, else append.
+  # 1) Prefer adding custom/wizado inside an existing collapsed group drawer (Omarchy uses group/tray-expander).
+  #    Fallback: add to modules-right near other status icons.
   python3 - <<PY
 import json, re, pathlib, sys, shutil
 
@@ -485,17 +549,57 @@ try:
     raw2 = re.sub(r"//.*?$", "", raw, flags=re.M)
     cfg = json.loads(raw2)
 
-    def inject_module(arr):
+    def remove_module(arr, mod):
+        if not isinstance(arr, list):
+            return arr
+        return [x for x in arr if x != mod]
+
+    def inject_right(arr):
+        if not isinstance(arr, list):
+            return ["custom/wizado"]
         if "custom/wizado" in arr:
             return arr
         # Place before bluetooth or network if possible, else append
         for target in ["bluetooth", "network", "pulseaudio", "cpu", "battery"]:
-             if target in arr:
-                 i = arr.index(target)
-                 return arr[:i] + ["custom/wizado"] + arr[i:]
+            if target in arr:
+                i = arr.index(target)
+                return arr[:i] + ["custom/wizado"] + arr[i:]
         return arr + ["custom/wizado"]
 
-    cfg["modules-right"] = inject_module(cfg.get("modules-right", []))
+    def find_drawer_group_key(cfg_obj):
+        # Prefer Omarchy's tray expander if present.
+        if isinstance(cfg_obj.get("group/tray-expander"), dict) and isinstance(cfg_obj["group/tray-expander"].get("modules"), list):
+            return "group/tray-expander"
+        # Otherwise, look for any group/* with a modules list (drawer-like).
+        for k, v in cfg_obj.items():
+            if not isinstance(k, str) or not k.startswith("group/"):
+                continue
+            if isinstance(v, dict) and isinstance(v.get("modules"), list):
+                return k
+        return None
+
+    group_key = find_drawer_group_key(cfg)
+    if group_key:
+        group = cfg.get(group_key, {})
+        mods = group.get("modules", [])
+        if isinstance(mods, list):
+            if "custom/wizado" not in mods:
+                # Keep the first module as the always-visible one (usually the expand icon).
+                # Insert after tray if present, else append (but never at index 0).
+                if "tray" in mods:
+                    i = mods.index("tray") + 1
+                    mods = mods[:i] + ["custom/wizado"] + mods[i:]
+                else:
+                    mods = mods + ["custom/wizado"]
+                    if mods and mods[0] == "custom/wizado":
+                        mods = ["custom/expand-icon"] + mods
+            group["modules"] = mods
+            cfg[group_key] = group
+        # Ensure it's not duplicated in the top-level module lists.
+        for list_key in ("modules-right", "modules-left", "modules-center"):
+            cfg[list_key] = remove_module(cfg.get(list_key, []), "custom/wizado")
+    else:
+        cfg["modules-right"] = inject_right(cfg.get("modules-right", []))
 
     term_cmd = get_terminal_cmd()
 
@@ -555,6 +659,8 @@ require_cmd hyprctl
 
 confirm_or_die "This will install/configure Steam and Hyprland bindings. Continue?"
 INSTALLER_STARTED=1
+
+cleanup_wizado_processes
 
 ensure_state_dir
 clear_installed_items

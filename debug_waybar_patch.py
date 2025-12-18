@@ -19,22 +19,58 @@ try:
     raw2 = re.sub(r"//.*?$", "", raw, flags=re.M)
     cfg = json.loads(raw2)
 
-    def inject_module(arr):
+    def remove_module(arr, mod):
+        if not isinstance(arr, list):
+            return arr
+        return [x for x in arr if x != mod]
+
+    def inject_right(arr):
+        if not isinstance(arr, list):
+            return ["custom/wizado"]
         if "custom/wizado" in arr:
             return arr
-        if "custom/omarchy" in arr:
-            i = arr.index("custom/omarchy") + 1
-            return arr[:i] + ["custom/wizado"] + arr[i:]
+        for target in ["bluetooth", "network", "pulseaudio", "cpu", "battery"]:
+            if target in arr:
+                i = arr.index(target)
+                return arr[:i] + ["custom/wizado"] + arr[i:]
         return arr + ["custom/wizado"]
 
+    def find_drawer_group_key(cfg_obj):
+        if isinstance(cfg_obj.get("group/tray-expander"), dict) and isinstance(cfg_obj["group/tray-expander"].get("modules"), list):
+            return "group/tray-expander"
+        for k, v in cfg_obj.items():
+            if not isinstance(k, str) or not k.startswith("group/"):
+                continue
+            if isinstance(v, dict) and isinstance(v.get("modules"), list):
+                return k
+        return None
+
     print("Injecting module...")
-    cfg["modules-left"] = inject_module(cfg.get("modules-left", []))
+    group_key = find_drawer_group_key(cfg)
+    if group_key:
+        group = cfg.get(group_key, {})
+        mods = group.get("modules", [])
+        if isinstance(mods, list):
+            if "custom/wizado" not in mods:
+                if "tray" in mods:
+                    i = mods.index("tray") + 1
+                    mods = mods[:i] + ["custom/wizado"] + mods[i:]
+                else:
+                    mods = mods + ["custom/wizado"]
+                    if mods and mods[0] == "custom/wizado":
+                        mods = ["custom/expand-icon"] + mods
+            group["modules"] = mods
+            cfg[group_key] = group
+        for list_key in ("modules-right", "modules-left", "modules-center"):
+            cfg[list_key] = remove_module(cfg.get(list_key, []), "custom/wizado")
+    else:
+        cfg["modules-right"] = inject_right(cfg.get("modules-right", []))
 
     term_cmd = get_terminal_cmd()
     print(f"Detected terminal: {term_cmd}")
 
     cfg["custom/wizado"] = {
-        "format": "{icon}",
+        "format": "{}",
         "return-type": "json",
         "exec": str(pathlib.Path.home() / ".config/waybar/scripts/wizado-status.sh"),
         "interval": 2,

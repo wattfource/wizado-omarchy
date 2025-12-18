@@ -1,6 +1,8 @@
 # Wizado 🧙‍♂️
 
-**Wizado** is a "Couch Mode" companion for Hyprland on Arch Linux (specifically targeted at Omarchy). It provides a seamless way to launch Steam in a dedicated `gamescope` session, optimizing your system for gaming performance while keeping your desktop environment intact.
+**Wizado** is an **Omarchy-only** "Couch Mode" companion for Hyprland on Arch Linux.
+
+It launches Steam in a dedicated `gamescope` session and wires up Omarchy’s Hyprland + Waybar integration.
 
 ## Features
 
@@ -11,7 +13,15 @@
 - 🍫 **Waybar Integration:** Adds a gamepad icon to Waybar for mouse-driven launching and status.
 - ⌨️ **Hyprland Bindings:**
   - `Super + Shift + S`: Launch Steam (Nested/Couch Mode)
+  - `Super + Alt + S`: Launch Steam (Exclusive TTY / Max Performance)
   - `Super + Shift + R`: Exit/Kill Session
+
+## Requirements (by design)
+
+Wizado is designed **only** for:
+- **Omarchy (Arch Linux)**
+- **Hyprland**
+- **Limine + UKI** boot flow (Omarchy default), with kernel cmdline in `/boot/limine.conf`
 
 ## Installation
 
@@ -96,3 +106,15 @@ Instructions for the package maintainer to submit/update the AUR package.
 - **Launch:** Press `Super + Shift + S` or click the  icon in Waybar.
 - **Settings:** Click the Waybar icon to open the menu, or select "Settings" before launching.
 - **Exit:** Press `Super + Shift + R` or use the "Exit" option in the Steam power menu.
+
+### Enable Exclusive TTY Mode (Super+Alt+S)
+
+To make `Super + Alt + S` truly “exclusive” (VT switch + DRM backend, no Hyprland compositor overhead), run:
+
+```bash
+wizado enable-tty
+```
+
+Then reboot. This installs:
+- A sudoers drop-in for passwordless `openvt/chvt`
+- `nvidia-drm.modeset=1` into `/boot/limine.conf` (required for NVIDIA DRM mode)

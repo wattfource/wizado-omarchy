@@ -199,6 +199,8 @@ get_gpu_args() {
            echo "[$(date -Is)] WARNING: nvidia-drm.modeset=1 is missing from kernel parameters!" >>"$LOG_FILE" 2>&1
            echo "[$(date -Is)] Optimized launch (TTY mode) WILL FAIL on NVIDIA without this." >>"$LOG_FILE" 2>&1
            echo "[$(date -Is)] Please add nvidia-drm.modeset=1 to your bootloader config." >>"$LOG_FILE" 2>&1
+           tty_prereq_error "TTY mode on NVIDIA requires kernel param nvidia-drm.modeset=1. Add it, reboot, then try again."
+           exit 1
         fi
       fi
     else
@@ -253,17 +255,23 @@ clean_display_env_for_tty() {
   unset WAYLAND_DISPLAY
 }
 
-# If TTY mode was requested but passwordless sudo isn't available, fall back to nested
-# (Hypr hotkeys don't surface stderr, so failing hard feels like "nothing happened").
+tty_prereq_error() {
+  local msg="$1"
+  {
+    echo "[$(date -Is)] ERROR: $msg"
+  } >>"$LOG_FILE" 2>&1 || true
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "wizado" "$msg" >/dev/null 2>&1 || true
+  fi
+  echo "[wizado] $msg" >&2
+}
+
+# TTY mode is meant to be the "exclusive/max performance" path.
+# If prerequisites are missing, do NOT silently fall back to nested.
 if [[ "$gamesmode_mode" == "tty" ]]; then
   if ! sudo -n true >/dev/null 2>&1; then
-    {
-      echo "[$(date -Is)] WARNING: tty mode requested but passwordless sudo is not configured. Falling back to nested."
-    } >>"$LOG_FILE" 2>&1 || true
-    if command -v notify-send >/dev/null 2>&1; then
-      notify-send "wizado" "TTY mode needs passwordless sudo (openvt/chvt). Falling back to nested." >/dev/null 2>&1 || true
-    fi
-    gamesmode_mode="nested"
+    tty_prereq_error "TTY mode needs passwordless sudo for openvt/chvt. Re-run setup and install the sudoers drop-in."
+    exit 1
   fi
 fi
 

@@ -14,9 +14,10 @@ Default hotkeys (can be changed later):
   - Super+Shift+S : enter couch mode (Steam in gamescope)
   - Super+Shift+R : exit couch mode (quit Steam + gamescope)
 
-Optional: exclusive (no compositor overhead) TTY mode:
-  - create ~/.gaming-mode.conf with: GAMESMODE_MODE=tty
-  - re-run: wizado setup (to install the sudoers drop-in)
+Omarchy-only: exclusive (no compositor overhead) TTY mode:
+  - Run: wizado enable-tty
+  - Reboot
+  - Then use: Super+Alt+S
 EOF
 }
 

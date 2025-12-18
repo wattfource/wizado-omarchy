@@ -14,12 +14,14 @@ wizado
 
 Usage:
   wizado setup [--yes|-y] [--dry-run]
+  wizado enable-tty [--yes|-y] [--dry-run]
   wizado update [--yes|-y] [--dry-run] [--system]
   wizado remove [--yes|-y] [--dry-run]
 
 Notes:
+  - Omarchy-only (Arch Linux + Hyprland + Omarchy defaults).
   - `setup` writes user files (launchers + Hyprland include) under your $HOME.
-  - For "exclusive TTY" gamescope mode, setup can install a sudoers drop-in.
+  - `enable-tty` enables prerequisites for "exclusive TTY" mode (Super+Alt+S): sudoers + nvidia-drm.modeset=1 (Limine cmdline).
 EOF
 }
 
@@ -28,6 +30,7 @@ shift || true
 
 case "$cmd" in
   setup) exec "${ROOT}/scripts/setup.sh" "$@" ;;
+  enable-tty) exec "${ROOT}/scripts/enable-tty.sh" "$@" ;;
   update) exec "${ROOT}/scripts/update.sh" "$@" ;;
   remove) exec "${ROOT}/scripts/remove.sh" "$@" ;;
   -h|--help|"") usage; exit 0 ;;

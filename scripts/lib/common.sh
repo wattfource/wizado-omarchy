@@ -32,6 +32,17 @@ require_root() {
   is_root || die "This action requires root. Re-run with sudo."
 }
 
+is_omarchy() {
+  # Heuristic detection for Omarchy. We intentionally only support Omarchy setups.
+  # - Omarchy installs its defaults under ~/.local/share/omarchy
+  # - It also sets OMARCHY_PATH for some scripts
+  [[ -d "${HOME}/.local/share/omarchy" ]] || [[ -n "${OMARCHY_PATH:-}" ]]
+}
+
+require_omarchy() {
+  is_omarchy || die "This tool is designed for Omarchy (Arch Linux) only. Omarchy was not detected on this system."
+}
+
 repo_root() {
   # Resolve repo root based on this file location: scripts/lib/common.sh
   local here

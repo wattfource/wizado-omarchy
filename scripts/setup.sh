@@ -100,8 +100,10 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/setup.sh [--yes|-y] [--dry-run]
 
-Installs Steam + required dependencies for Omarchy 3.2 (Arch/Hyprland/Wayland),
-and configures a Hyprland keybind to launch Steam in a gamescope session.
+Omarchy-only installer (Arch/Hyprland/Wayland).
+
+Installs Steam + required dependencies and configures Omarchy/Hyprland bindings
+to launch Steam in a gamescope session.
 
 Options:
   --yes, -y     Non-interactive; assume "yes" for confirmations.
@@ -398,7 +400,8 @@ maybe_install_gamesmode_sudoers() {
   # Needed for optional GAMESMODE_MODE=tty (openvt/chvt) so Hypr hotkey won't hang on a password prompt.
   [[ -d "$SUDOERS_DIR" ]] || return 0
 
-  warn "Optional: enable passwordless sudo for /usr/bin/openvt and /usr/bin/chvt (required for exclusive TTY gamescope mode)."
+  warn "Optional (but REQUIRED for Super+Alt+S / TTY mode): enable passwordless sudo for /usr/bin/openvt and /usr/bin/chvt."
+  warn "Without this, TTY mode cannot switch VTs from a Hyprland hotkey."
   confirm_or_die "Install sudoers drop-in at ${GAMESMODE_SUDOERS_FILE}?"
 
   local username
@@ -653,6 +656,8 @@ main() {
   fi
 
   # check_license
+
+require_omarchy
 
 require_cmd pacman
 require_cmd hyprctl

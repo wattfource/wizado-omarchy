@@ -1,7 +1,7 @@
 pkgname=wizado
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Hyprland hotkey + gamescope Steam couch mode helper (Omarchy/Arch)"
+pkgdesc="Omarchy-only: Hyprland hotkey + gamescope Steam couch mode helper (Arch Linux)"
 arch=('any')
 url="https://github.com/REPLACE_ME/wizado"
 license=('MIT')

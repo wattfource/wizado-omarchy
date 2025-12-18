@@ -192,17 +192,24 @@ if [[ "$gamesmode_mode" == "tty" ]]; then
     exit 1
   }
 
-  sudo openvt -c "$target_vt" -s -f -- bash -lc "
-    set -euo pipefail
-    exec gamescope --backend drm ${base_gamescope_args[*]} -- steam ${steam_args}
-  " >>"$LOG_FILE" 2>&1 &
-  openvt_pid=$!
-  echo "$openvt_pid" > "$SESSION_FILE" 2>/dev/null || true
+  # Use su - $USER to avoid running Steam as root, and set XDG_RUNTIME_DIR.
+  # We use -w (wait) so openvt doesn't exit until the command (gamescope) finishes.
+  # We run the whole thing in a background subshell so we can switch back to the original VT after.
+  local user_name="$USER"
+  local user_id
+  user_id=$(id -u)
 
   (
-    wait "$openvt_pid" || true
+    sudo openvt -c "$target_vt" -s -f -w -- su - "$user_name" -c "
+      export XDG_RUNTIME_DIR=/run/user/$user_id
+      exec gamescope --backend drm ${base_gamescope_args[*]} -- steam ${steam_args}
+    " >>"$LOG_FILE" 2>&1
+    
+    # After gamescope exits, switch back to the desktop VT.
+    sleep 1
     sudo chvt "$current_vt" >/dev/null 2>&1 || true
-  ) >/dev/null 2>&1 &
+  ) &
+  echo "$!" > "$SESSION_FILE" 2>/dev/null || true
   exit 0
 fi
 

@@ -184,12 +184,16 @@ check_user_groups() {
     missing_groups+=("video")
   fi
   
+  if ! groups | grep -q '\brender\b'; then
+    missing_groups+=("render")
+  fi
+  
   if ! groups | grep -q '\binput\b'; then
     missing_groups+=("input")
   fi
   
   if ((${#missing_groups[@]} == 0)); then
-    log "User groups (video, input): OK"
+    log "User groups (video, render, input): OK"
     return 0
   fi
   

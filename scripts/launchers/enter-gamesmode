@@ -87,28 +87,48 @@ fi
 # Clean up any stale gamescope locks
 rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
 
-# Build gamescope command
-# Using wayland backend (nested under Hyprland)
+# Build gamescope arguments
+# Reference: https://github.com/ValveSoftware/gamescope
 GAMESCOPE_ARGS=(
-  -e                          # Steam integration
-  -f                          # Fullscreen
-  -w "$WIDTH" -h "$HEIGHT"    # Internal resolution
-  -W "$WIDTH" -H "$HEIGHT"    # Output resolution
-  -r "$REFRESH"               # Refresh rate
-  --force-grab-cursor         # Capture cursor
-  --force-windows-fullscreen  # Force fullscreen for windows
+  -e                            # Steam integration mode (exposes special Wayland protocols)
+  -f                            # Start in fullscreen
+  -w "$WIDTH" -h "$HEIGHT"      # Internal (game render) resolution
+  -W "$WIDTH" -H "$HEIGHT"      # Output (window) resolution  
+  -r "$REFRESH"                 # Refresh rate limit
+  --force-grab-cursor           # Capture cursor in gamescope window
 )
 
-# Launch with gamemode if available
-LAUNCH_CMD="/usr/bin/gamescope"
+# Steam arguments
+# -steamdeck: Enables Steam Deck UI mode, designed for gamescope integration
+# This provides better controller support and gamescope-aware features
+STEAM_ARGS="-steamdeck -steamos3"
+
+# Environment variables for proper integration
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+
+# If gamemode is available, configure Steam to use it for games
+# Note: gamemoderun should wrap the GAME, not gamescope itself
+# Steam will use gamemode automatically if lib32-gamemode is installed
+# and games are launched with gamemoderun in their launch options
 if command -v gamemoderun >/dev/null 2>&1; then
-  LAUNCH_CMD="gamemoderun /usr/bin/gamescope"
+  # Enable gamemode integration in Steam
+  export STEAM_RUNTIME_PREFER_HOST_LIBRARIES=0
+  log "Gamemode available - games can use gamemoderun in launch options"
 fi
 
-log "Launching: $LAUNCH_CMD ${GAMESCOPE_ARGS[*]} -- steam -tenfoot"
+# If MangoHud is available, enable it via gamescope
+if command -v mangohud >/dev/null 2>&1; then
+  GAMESCOPE_ARGS+=(--mangoapp)
+  log "MangoHud enabled via --mangoapp"
+fi
 
-# Launch gamescope with Steam Big Picture
-setsid $LAUNCH_CMD "${GAMESCOPE_ARGS[@]}" -- /usr/bin/steam -tenfoot >> "$LOG_FILE" 2>&1 &
+log "Launching: gamescope ${GAMESCOPE_ARGS[*]} -- steam $STEAM_ARGS"
+
+# Launch gamescope with Steam
+# Note: We don't wrap gamescope with gamemoderun because:
+# 1. Gamemode should optimize the actual games, not the compositor
+# 2. Steam handles gamemode integration for individual games
+setsid /usr/bin/gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/bin/steam $STEAM_ARGS >> "$LOG_FILE" 2>&1 &
 GAMESCOPE_PID=$!
 
 echo "$GAMESCOPE_PID" > "$SESSION_FILE"

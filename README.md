@@ -118,3 +118,12 @@ wizado enable-tty
 Then reboot. This installs:
 - A sudoers drop-in for passwordless `openvt/chvt`
 - `nvidia-drm.modeset=1` into `/boot/limine.conf` (required for NVIDIA DRM mode)
+
+### Select the Performance GPU (multi-GPU systems)
+
+If your system has **more than one GPU** (e.g. AMD iGPU + NVIDIA dGPU), performance mode must know which **DRM/KMS device** to use.
+
+Open the menu (Waybar gamepad icon) and set:
+- **Settings → Performance GPU**
+
+This saves `PERFORMANCE_DRM_DEVICE` (and `PERFORMANCE_VK_DEVICE`) into `~/.gaming-mode.conf`, and performance mode will always use that GPU via `WLR_DRM_DEVICES`.

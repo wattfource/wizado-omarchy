@@ -52,6 +52,29 @@ if [[ "$mode" == "performance" || "$mode" == "tty" ]] && [[ "$sudo_ready" != "1"
 Note: performance mode needs passwordless sudo for openvt/chvt."
 fi
 
+# If user has multiple GPUs, performance mode requires picking which DRM/KMS device to use.
+# (wizado-menu → Settings → Performance GPU)
+if [[ "$mode" == "performance" || "$mode" == "tty" ]]; then
+  perf_drm_device=""
+  if [[ -f "${HOME}/.gaming-mode.conf" ]]; then
+    # Strip surrounding quotes safely (handles "..." or '...') without emitting stderr.
+    perf_drm_device="$(grep -E '^PERFORMANCE_DRM_DEVICE=' "${HOME}/.gaming-mode.conf" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
+    perf_drm_device="${perf_drm_device%\"}"
+    perf_drm_device="${perf_drm_device#\"}"
+    perf_drm_device="${perf_drm_device%\'}"
+    perf_drm_device="${perf_drm_device#\'}"
+  fi
+  drm_card_count="0"
+  if compgen -G "/dev/dri/by-path/*-card" >/dev/null 2>&1; then
+    drm_card_count="$(ls -1 /dev/dri/by-path/*-card 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  if [[ "${drm_card_count}" -ge 2 && -z "${perf_drm_device}" ]]; then
+    tooltip_base="${tooltip_base}
+
+Note: multi-GPU detected. Select Performance GPU in wizado-menu → Settings → Performance GPU."
+  fi
+fi
+
 # Use Python for safe JSON encoding if available, otherwise fall back to minimal sed (risky for newlines)
 if command -v python3 >/dev/null 2>&1; then
   python3 -c "import json, sys; print(json.dumps({'text': sys.argv[1], 'alt': sys.argv[2], 'class': sys.argv[3], 'tooltip': sys.argv[4]}))" \

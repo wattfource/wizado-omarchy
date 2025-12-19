@@ -9,6 +9,12 @@ import re
 CONFIG_FILE = os.path.expanduser("~/.gaming-mode.conf")
 HYPR_INCLUDE_FILE = os.path.expanduser("~/.config/hypr/conf.d/wizado.conf")
 
+VENDOR_NAMES = {
+    "0x10de": "NVIDIA",
+    "0x1002": "AMD",
+    "0x8086": "Intel",
+}
+
 def load_config():
     config = {}
     if os.path.exists(CONFIG_FILE):
@@ -57,6 +63,63 @@ def get_display_info():
     except Exception:
         pass
     return 1920, 1080, 60
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+def _card_sysfs_info(dev_node: str):
+    # dev_node like /dev/dri/card1
+    card = os.path.basename(os.path.realpath(dev_node))
+    base = f"/sys/class/drm/{card}/device"
+    vendor = _read_text(os.path.join(base, "vendor"))
+    device = _read_text(os.path.join(base, "device"))
+    return card, vendor, device
+
+def _pci_pretty_name(pci_addr: str) -> str:
+    # Best-effort: lspci -s 0000:01:00.0 -nn
+    try:
+        out = subprocess.check_output(["lspci", "-s", pci_addr, "-nn"], stderr=subprocess.DEVNULL).decode("utf-8", errors="replace").strip()
+        # Strip leading PCI address if present
+        return re.sub(r"^[0-9a-fA-F:.]+\\s+", "", out)
+    except Exception:
+        return ""
+
+def list_drm_cards():
+    cards = []
+    by_path = "/dev/dri/by-path"
+    if not os.path.isdir(by_path):
+        return cards
+
+    for name in sorted(os.listdir(by_path)):
+        if not name.endswith("-card"):
+            continue
+        by_path_node = os.path.join(by_path, name)
+        real_node = os.path.realpath(by_path_node)
+        # pci-0000:01:00.0-card
+        m = re.match(r"^pci-(.+)-card$", name)
+        pci_addr = m.group(1) if m else ""
+        card, vendor, device = _card_sysfs_info(real_node)
+        ven_dev = ""
+        if vendor and device:
+            ven_dev = f"{vendor[2:]}:{device[2:]}".lower() if vendor.startswith("0x") and device.startswith("0x") else f"{vendor}:{device}"
+        vendor_name = VENDOR_NAMES.get(vendor.lower(), vendor or "Unknown")
+        pretty = _pci_pretty_name(pci_addr) if pci_addr else ""
+        cards.append({
+            "by_path": by_path_node,
+            "real": real_node,
+            "card": card,
+            "pci": pci_addr,
+            "vendor": vendor,
+            "device": device,
+            "vendor_name": vendor_name,
+            "ven_dev": ven_dev,
+            "pretty": pretty,
+        })
+    return cards
 
 def draw_menu(stdscr, title, options, current_selection):
     stdscr.clear()
@@ -278,6 +341,100 @@ def resolution_menu(stdscr):
                 save_config(config)
                 return
 
+def performance_gpu_menu(stdscr):
+    config = load_config()
+    current = config.get("PERFORMANCE_DRM_DEVICE", "")
+    cards = list_drm_cards()
+
+    options = []
+    if not cards:
+        options = [
+            ("No DRM cards found", "/dev/dri/by-path not present"),
+            ("Back", "Return to Settings"),
+        ]
+        selection = 0
+        while True:
+            draw_menu(stdscr, "Performance GPU (TTY)", options, selection)
+            key = stdscr.getch()
+            if key == curses.KEY_UP:
+                selection = (selection - 1) % len(options)
+            elif key == curses.KEY_DOWN:
+                selection = (selection + 1) % len(options)
+            elif key == 10:
+                return
+
+    # Build menu options; keep labels short
+    for c in cards:
+        is_selected = (current == c["by_path"]) or (current == c["real"])
+        marker = "*" if is_selected else " "
+        pci_short = c["pci"].replace("0000:", "") if c["pci"] else c["card"]
+        label = f"{marker} {c['vendor_name']} {pci_short}"
+        desc_parts = []
+        if c["ven_dev"]:
+            desc_parts.append(c["ven_dev"])
+        if c["pretty"]:
+            desc_parts.append(c["pretty"])
+        desc_parts.append(c["by_path"])
+        options.append((label, " • ".join(desc_parts)[:80]))
+    options.append(("Back", "Return to Settings"))
+
+    # Default selection: current if set; else first entry
+    selection = 0
+    if current:
+        for i, c in enumerate(cards):
+            if current == c["by_path"] or current == c["real"]:
+                selection = i
+                break
+
+    while True:
+        draw_menu(stdscr, "Performance GPU (TTY)", options, selection)
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            selection = (selection - 1) % len(options)
+        elif key == curses.KEY_DOWN:
+            selection = (selection + 1) % len(options)
+        elif key == 10:
+            choice = options[selection][0]
+            if choice == "Back":
+                return
+
+            chosen = cards[selection]
+            config["PERFORMANCE_DRM_DEVICE"] = chosen["by_path"]
+            if chosen.get("ven_dev"):
+                config["PERFORMANCE_VK_DEVICE"] = chosen["ven_dev"]
+            save_config(config)
+
+            msg = curses.newwin(4, 70, 4, 4)
+            msg.box()
+            msg.addstr(1, 2, "Saved Performance GPU selection:")
+            msg.addstr(2, 2, f"{chosen['vendor_name']} {chosen.get('pretty','')}".strip()[:66])
+            msg.refresh()
+            curses.napms(1200)
+            return
+
+def settings_menu(stdscr):
+    selection = 0
+    options = [
+        ("Resolution", "Internal render resolution / upscaling presets"),
+        ("Performance GPU", "Choose which GPU drives the TTY session (WLR_DRM_DEVICES)"),
+        ("Back", "Return to main menu"),
+    ]
+    while True:
+        draw_menu(stdscr, "Settings", options, selection)
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            selection = (selection - 1) % len(options)
+        elif key == curses.KEY_DOWN:
+            selection = (selection + 1) % len(options)
+        elif key == 10:
+            choice = options[selection][0]
+            if choice == "Back":
+                return
+            if choice == "Resolution":
+                resolution_menu(stdscr)
+            elif choice == "Performance GPU":
+                performance_gpu_menu(stdscr)
+
 def main_menu(stdscr):
     curses.curs_set(0)
     curses.start_color()
@@ -314,7 +471,7 @@ def main_menu(stdscr):
                 subprocess.run([launcher, "--mode", "performance", "--steam-ui", "bigpicture"])
                 sys.exit(0)
             elif selection == 2: # Settings
-                resolution_menu(stdscr)
+                settings_menu(stdscr)
             elif selection == 3: # Keybindings
                 keybindings_menu(stdscr)
             elif selection == 4: # Exit

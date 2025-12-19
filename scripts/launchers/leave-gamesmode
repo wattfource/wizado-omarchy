@@ -6,6 +6,34 @@ set -euo pipefail
 STATE_DIR="${HOME}/.cache/wizado"
 SESSION_FILE="${STATE_DIR}/session.pid"
 
+# Restore NVIDIA PowerMizer mode
+restore_nvidia_settings() {
+  if [[ -f "${STATE_DIR}/nvidia_powermizer_mode" ]]; then
+    local original_mode
+    original_mode=$(cat "${STATE_DIR}/nvidia_powermizer_mode" 2>/dev/null || echo "0")
+    
+    if command -v nvidia-settings >/dev/null 2>&1; then
+      nvidia-settings -a "[gpu:0]/GpuPowerMizerMode=$original_mode" >/dev/null 2>&1 || true
+    fi
+    
+    # Note: We don't disable persistence mode as it's set system-wide by setup
+    
+    rm -f "${STATE_DIR}/nvidia_powermizer_mode"
+  fi
+}
+
+# Restore AMD GPU performance levels
+restore_amd_settings() {
+  if [[ -f "${STATE_DIR}/amd_perf_levels" ]]; then
+    while IFS=: read -r path level; do
+      if [[ -f "$path" ]] && [[ -w "$path" ]] && [[ -n "$level" ]]; then
+        echo "$level" > "$path" 2>/dev/null || true
+      fi
+    done < "${STATE_DIR}/amd_perf_levels"
+    rm -f "${STATE_DIR}/amd_perf_levels"
+  fi
+}
+
 # Gracefully shutdown Steam first
 if pgrep -x steam >/dev/null 2>&1; then
   steam -shutdown >/dev/null 2>&1 || true
@@ -44,6 +72,10 @@ fi
 
 # Clean up stale locks
 rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
+
+# Restore GPU settings
+restore_nvidia_settings
+restore_amd_settings
 
 # Restart hypridle if it was running before gaming mode
 if [[ -f "${STATE_DIR}/hypridle_was_running" ]]; then

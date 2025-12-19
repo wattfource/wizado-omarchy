@@ -2,10 +2,13 @@
 set -euo pipefail
 
 # wizado: launch Steam in gamescope (nested mode under Hyprland)
+# With maximum performance optimizations
 
 STATE_DIR="${HOME}/.cache/wizado"
+CONFIG_DIR="${HOME}/.local/share/steam-launcher"
 SESSION_FILE="${STATE_DIR}/session.pid"
 LOG_FILE="${STATE_DIR}/enter-gamesmode.log"
+HARDWARE_CONF="${CONFIG_DIR}/hardware.conf"
 
 mkdir -p "$STATE_DIR"
 
@@ -46,16 +49,83 @@ except Exception:
   echo "$w $h $r"
 }
 
+# Load hardware config from setup, or detect if not available
+load_hardware_config() {
+  HAS_NVIDIA=false
+  HAS_AMD=false
+  HAS_INTEL=false
+  NVIDIA_VK_ID=""
+  
+  if [[ -f "$HARDWARE_CONF" ]]; then
+    source "$HARDWARE_CONF"
+    log "Loaded hardware config: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD INTEL=$HAS_INTEL"
+  else
+    # Fallback: detect NVIDIA GPU
+    if command -v lspci >/dev/null 2>&1; then
+      if lspci | grep -iq nvidia; then
+        HAS_NVIDIA=true
+        NVIDIA_VK_ID=$(lspci -nn | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]')
+      fi
+      if lspci | grep -iqE 'amd|radeon'; then
+        HAS_AMD=true
+      fi
+    fi
+    log "Hardware detected dynamically: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD"
+  fi
+}
+
+# Set NVIDIA GPU to maximum performance mode
+set_nvidia_performance() {
+  $HAS_NVIDIA || return 0
+  
+  # Save current PowerMizer mode for restoration
+  if command -v nvidia-settings >/dev/null 2>&1; then
+    local current_mode
+    current_mode=$(nvidia-settings -q '[gpu:0]/GpuPowerMizerMode' 2>/dev/null | grep -oP 'GpuPowerMizerMode.*: \K[0-9]+' || echo "0")
+    echo "$current_mode" > "${STATE_DIR}/nvidia_powermizer_mode"
+    
+    # Set to Prefer Maximum Performance (mode 1)
+    nvidia-settings -a '[gpu:0]/GpuPowerMizerMode=1' >/dev/null 2>&1 || true
+    log "Set NVIDIA PowerMizer to Performance mode (was: $current_mode)"
+  fi
+  
+  # Enable persistence mode
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -pm 1 >/dev/null 2>&1 || true
+    log "Enabled NVIDIA persistence mode"
+  fi
+}
+
+# Set AMD GPU to high performance
+set_amd_performance() {
+  $HAS_AMD || return 0
+  
+  for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+    if [[ -f "$card" ]] && [[ -w "$card" ]]; then
+      local current_level
+      current_level=$(cat "$card" 2>/dev/null || echo "auto")
+      echo "$card:$current_level" >> "${STATE_DIR}/amd_perf_levels"
+      
+      echo "high" > "$card" 2>/dev/null || true
+      log "Set AMD performance level to high (was: $current_level)"
+    fi
+  done
+}
+
 require_cmd steam
 require_cmd gamescope
 require_cmd pgrep
 require_cmd pkill
+
+# Load hardware configuration
+load_hardware_config
 
 # Get display info
 read -r WIDTH HEIGHT REFRESH <<< "$(get_display)"
 
 log "Starting enter-gamesmode"
 log "Display: ${WIDTH}x${HEIGHT}@${REFRESH}Hz"
+log "Hardware: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD INTEL=$HAS_INTEL"
 
 # Stop hypridle during gaming to prevent screen blanking
 hypridle_was_running="0"
@@ -87,36 +157,49 @@ fi
 # Clean up any stale gamescope locks
 rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
 
+# Apply GPU performance settings
+rm -f "${STATE_DIR}/nvidia_powermizer_mode" "${STATE_DIR}/amd_perf_levels" 2>/dev/null || true
+set_nvidia_performance
+set_amd_performance
+
 # Build gamescope arguments
-# Reference: https://github.com/ValveSoftware/gamescope
 GAMESCOPE_ARGS=(
-  -e                            # Steam integration mode (exposes special Wayland protocols)
-  -f                            # Start in fullscreen
+  -e                            # Steam integration mode
+  --borderless                  # Borderless window (works better than -f for ultrawides)
   -w "$WIDTH" -h "$HEIGHT"      # Internal (game render) resolution
   -W "$WIDTH" -H "$HEIGHT"      # Output (window) resolution  
   -r "$REFRESH"                 # Refresh rate limit
   --force-grab-cursor           # Capture cursor in gamescope window
+  --xwayland-count 2            # Extra XWayland server for stability
 )
 
+# Prefer NVIDIA GPU for multi-GPU systems
+if $HAS_NVIDIA && [[ -n "$NVIDIA_VK_ID" ]]; then
+  GAMESCOPE_ARGS+=(--prefer-vk-device "$NVIDIA_VK_ID")
+  log "Using NVIDIA GPU: $NVIDIA_VK_ID"
+fi
+
 # Steam arguments
-# -steamdeck: Enables Steam Deck UI mode, designed for gamescope integration
-# This provides better controller support and gamescope-aware features
-STEAM_ARGS="-steamdeck -steamos3"
+STEAM_ARGS="-tenfoot"
 
 # Environment variables for proper integration
 export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
 
-# If gamemode is available, configure Steam to use it for games
-# Note: gamemoderun should wrap the GAME, not gamescope itself
-# Steam will use gamemode automatically if lib32-gamemode is installed
-# and games are launched with gamemoderun in their launch options
-if command -v gamemoderun >/dev/null 2>&1; then
-  # Enable gamemode integration in Steam
-  export STEAM_RUNTIME_PREFER_HOST_LIBRARIES=0
-  log "Gamemode available - games can use gamemoderun in launch options"
+# Force NVIDIA GPU for Vulkan/OpenGL if present
+if $HAS_NVIDIA; then
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  export __VK_LAYER_NV_optimus=NVIDIA_only
+  log "Set Vulkan/GLX environment for NVIDIA"
 fi
 
-# If MangoHud is available, enable it via gamescope
+# Gamemode info
+if command -v gamemoderun >/dev/null 2>&1; then
+  export STEAM_RUNTIME_PREFER_HOST_LIBRARIES=0
+  log "Gamemode available - add 'gamemoderun %command%' to game launch options"
+fi
+
+# MangoHud integration
 if command -v mangohud >/dev/null 2>&1; then
   GAMESCOPE_ARGS+=(--mangoapp)
   log "MangoHud enabled via --mangoapp"
@@ -125,9 +208,6 @@ fi
 log "Launching: gamescope ${GAMESCOPE_ARGS[*]} -- steam $STEAM_ARGS"
 
 # Launch gamescope with Steam
-# Note: We don't wrap gamescope with gamemoderun because:
-# 1. Gamemode should optimize the actual games, not the compositor
-# 2. Steam handles gamemode integration for individual games
 setsid /usr/bin/gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/bin/steam $STEAM_ARGS >> "$LOG_FILE" 2>&1 &
 GAMESCOPE_PID=$!
 

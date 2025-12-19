@@ -39,8 +39,8 @@ if [[ -f "$SESSION_FILE" ]]; then
   fi
 fi
 
-# In tty mode, we don't reliably own the gamescope PID; try a best-effort kill.
-if [[ "$mode" == "tty" ]]; then
+# In performance mode (separate VT), we don't reliably own the gamescope PID; try a best-effort kill.
+if [[ "$mode" == "performance" || "$mode" == "tty" ]]; then
   pkill -x gamescope 2>/dev/null || true
 fi
 

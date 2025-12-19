@@ -34,9 +34,9 @@ if [[ "$running" == "1" ]]; then
   class="running"
 fi
 
-mode_label="Normal (nested)"
-if [[ "$mode" == "tty" ]]; then
-  mode_label="Wizard (TTY)"
+mode_label="Nested"
+if [[ "$mode" == "performance" || "$mode" == "tty" ]]; then
+  mode_label="Performance"
 fi
 
 tooltip_base="Steam Couch Mode
@@ -46,10 +46,10 @@ Mode: ${mode_label}${vt:+ (VT ${vt})}
 
 Click to open menu"
 
-if [[ "$mode" == "tty" && "$sudo_ready" != "1" ]]; then
+if [[ "$mode" == "performance" || "$mode" == "tty" ]] && [[ "$sudo_ready" != "1" ]]; then
   tooltip_base="${tooltip_base}
 
-Note: wizard mode needs passwordless sudo for openvt/chvt."
+Note: performance mode needs passwordless sudo for openvt/chvt."
 fi
 
 # Use Python for safe JSON encoding if available, otherwise fall back to minimal sed (risky for newlines)

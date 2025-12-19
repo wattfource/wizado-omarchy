@@ -32,7 +32,7 @@ try:
         for target in ["bluetooth", "network", "pulseaudio", "cpu", "battery"]:
             if target in arr:
                 i = arr.index(target)
-                return arr[:i] + ["custom/wizado"] + arr[i:]
+            return arr[:i] + ["custom/wizado"] + arr[i:]
         return arr + ["custom/wizado"]
 
     def find_drawer_group_key(cfg_obj):

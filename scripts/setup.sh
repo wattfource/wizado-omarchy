@@ -31,6 +31,35 @@ WAYBAR_WIZARD_STATUS_SCRIPT="${WAYBAR_SCRIPTS_DIR}/wizado-status.sh"
 
 INSTALLER_STARTED=0
 
+maybe_install_updated_cli_shim() {
+  # If the system-installed wizado is older (missing newer subcommands like enable-tty),
+  # offer to install an updated CLI shim into /usr/local/bin/wizado (typically precedes /usr/bin in PATH).
+  #
+  # This is Omarchy-focused: users commonly run setup from a git checkout before reinstalling the package.
+  local root_dir
+  root_dir="$(cd "$SCRIPT_DIR/.." && pwd)"
+  local new_cli="${root_dir}/bin/wizado"
+
+  [[ -f "$new_cli" ]] || return 0
+  [[ -x "$new_cli" ]] || return 0
+
+  if ! command -v wizado >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if wizado --help 2>/dev/null | grep -q "enable-tty"; then
+    return 0
+  fi
+
+  warn "Your current wizado CLI ($(command -v wizado)) is older and does not include 'enable-tty'."
+  warn "Optional: install updated CLI to /usr/local/bin/wizado so you can run: wizado enable-tty"
+  confirm_or_die "Install updated wizado CLI to /usr/local/bin/wizado?"
+
+  run_sudo install -Dm755 "$new_cli" /usr/local/bin/wizado || die "Failed to install /usr/local/bin/wizado"
+  record_installed_item "file:/usr/local/bin/wizado"
+  log "Installed updated CLI: /usr/local/bin/wizado"
+}
+
 cleanup_wizado_processes() {
   # Best-effort cleanup of wizado-launched sessions so installs/updates don't race a running gamescope/Steam.
   #
@@ -485,8 +514,8 @@ EOF
     if [[ "$bind_style" == "bindd" ]]; then
       cat >>"$HYPR_INCLUDE_FILE" <<EOF
 unbind = SUPER ALT, S
-bindd = SUPER SHIFT, S, Steam (normal), exec, $SWITCH_BIN --mode nested
-bindd = SUPER ALT, S, Steam (wizard), exec, $SWITCH_BIN --mode tty
+bindd = SUPER SHIFT, S, Steam (nested), exec, $SWITCH_BIN --mode nested --steam-ui normal
+bindd = SUPER ALT, S, Steam (performance), exec, $SWITCH_BIN --mode performance --steam-ui bigpicture
 bindd = SUPER SHIFT, R, Exit Couch Mode, exec, $RETURN_BIN
 EOF
     else
@@ -658,6 +687,8 @@ main() {
   # check_license
 
 require_omarchy
+
+maybe_install_updated_cli_shim
 
 require_cmd pacman
 require_cmd hyprctl

@@ -11,13 +11,13 @@ This will:
   - add a 'source = ... # wizado:source' line to ~/.config/hypr/hyprland.conf (if needed)
 
 Default hotkeys (can be changed later):
-  - Super+Shift+S : enter couch mode (Steam in gamescope)
+  - Super+Shift+S : enter couch mode (Nested mode: gamescope under Hyprland)
   - Super+Shift+R : exit couch mode (quit Steam + gamescope)
 
 Omarchy-only: exclusive (no compositor overhead) TTY mode:
   - Run: wizado enable-tty
   - Reboot
-  - Then use: Super+Alt+S
+  - Then use: Super+Alt+S (Performance mode)
 EOF
 }
 

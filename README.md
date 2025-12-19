@@ -12,8 +12,8 @@ It launches Steam in a dedicated `gamescope` session and wires up Omarchy’s Hy
 - ⚙️ **TUI Settings:** Built-in terminal menu for configuration.
 - 🍫 **Waybar Integration:** Adds a gamepad icon to Waybar for mouse-driven launching and status.
 - ⌨️ **Hyprland Bindings:**
-  - `Super + Shift + S`: Launch Steam (Nested/Couch Mode)
-  - `Super + Alt + S`: Launch Steam (Exclusive TTY / Max Performance)
+  - `Super + Shift + S`: Launch Steam (Nested mode)
+  - `Super + Alt + S`: Launch Steam (Performance mode)
   - `Super + Shift + R`: Exit/Kill Session
 
 ## Requirements (by design)
@@ -107,9 +107,9 @@ Instructions for the package maintainer to submit/update the AUR package.
 - **Settings:** Click the Waybar icon to open the menu, or select "Settings" before launching.
 - **Exit:** Press `Super + Shift + R` or use the "Exit" option in the Steam power menu.
 
-### Enable Exclusive TTY Mode (Super+Alt+S)
+### Enable Performance Mode (Super+Alt+S)
 
-To make `Super + Alt + S` truly “exclusive” (VT switch + DRM backend, no Hyprland compositor overhead), run:
+To make `Super + Alt + S` truly “exclusive” (**Performance mode**: separate VT + DRM backend, Hyprland not in the render path), run:
 
 ```bash
 wizado enable-tty

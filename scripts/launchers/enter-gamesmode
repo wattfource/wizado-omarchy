@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # wizado: launch Steam in gamescope "couch mode"
-# - Default: nested gamescope under the current Wayland compositor (Hyprland)
-# - Optional: exclusive TTY mode (no compositor overhead) via ~/.gaming-mode.conf
+# - nested: gamescope under Hyprland (normal Steam UI)
+# - performance: gamescope on a separate VT (Big Picture; Hyprland not in the render path)
 
 STATE_DIR="${HOME}/.cache/wizado"
 SESSION_FILE="${STATE_DIR}/session.pid"
@@ -13,8 +13,8 @@ VT_FILE="${STATE_DIR}/vt"
 
 mkdir -p "$STATE_DIR"
 
-steam_args="-gamepadui"
-gamesmode_mode="nested" # nested|tty
+steam_args="" # default decided based on mode (nested=normal UI, performance=Big Picture)
+gamesmode_mode="nested" # nested|performance (legacy alias: tty)
 gamesmode_vt="2"
 
 usage() {
@@ -22,23 +22,23 @@ usage() {
 enter-gamesmode (wizado)
 
 Usage:
-  enter-gamesmode [--mode nested|tty] [--vt N] [--steam-mode gamepadui|bigpicture]
+  enter-gamesmode [--mode nested|performance] [--vt N] [--steam-ui normal|bigpicture]
 
 Notes:
   - nested: runs gamescope under your current compositor (Hyprland). No sudo required.
-  - tty: runs gamescope on a TTY using the DRM backend (no Hyprland compositor overhead).
-         Requires passwordless sudo for /usr/bin/openvt and /usr/bin/chvt (installed by setup.sh).
+  - performance: runs gamescope on a separate VT using the DRM backend.
+                 Requires passwordless sudo for /usr/bin/openvt and /usr/bin/chvt (enabled by wizado enable-tty).
 EOF
 }
 
 cli_mode=""
 cli_vt=""
-cli_steam_mode=""
+cli_steam_ui=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode) cli_mode="${2:-}"; shift 2 ;;
     --vt) cli_vt="${2:-}"; shift 2 ;;
-    --steam-mode) cli_steam_mode="${2:-}"; shift 2 ;;
+    --steam-ui) cli_steam_ui="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[wizado] Unknown arg: $1" >&2; usage; exit 2 ;;
   esac
@@ -47,12 +47,8 @@ done
 if [[ -f "${HOME}/.gaming-mode.conf" ]]; then
   # shellcheck disable=SC1090
   source "${HOME}/.gaming-mode.conf" 2>/dev/null || true
-  case "${STEAM_LAUNCH_MODE:-}" in
-    gamepadui|GAMEPADUI) steam_args="-gamepadui" ;;
-    bigpicture|BIGPICTURE) steam_args="-tenfoot" ;;
-  esac
   case "${GAMESMODE_MODE:-}" in
-    tty|TTY|exclusive|EXCLUSIVE) gamesmode_mode="tty" ;;
+    performance|PERFORMANCE|tty|TTY|exclusive|EXCLUSIVE) gamesmode_mode="performance" ;;
     nested|NESTED) gamesmode_mode="nested" ;;
   esac
   if [[ -n "${GAMESMODE_VT:-}" ]]; then
@@ -65,18 +61,18 @@ if [[ -f "${HOME}/.gaming-mode.conf" ]]; then
   fi
 fi
 
-if [[ -n "$cli_steam_mode" ]]; then
-  case "${cli_steam_mode,,}" in
-    gamepadui) steam_args="-gamepadui" ;;
+if [[ -n "$cli_steam_ui" ]]; then
+  case "${cli_steam_ui,,}" in
+    normal) steam_args="" ;;
     bigpicture) steam_args="-tenfoot" ;;
-    *) echo "[wizado] Invalid --steam-mode: $cli_steam_mode" >&2; exit 2 ;;
+    *) echo "[wizado] Invalid --steam-ui: $cli_steam_ui" >&2; exit 2 ;;
   esac
 fi
 
 if [[ -n "$cli_mode" ]]; then
   case "${cli_mode,,}" in
     nested) gamesmode_mode="nested" ;;
-    tty|exclusive) gamesmode_mode="tty" ;;
+    performance|tty|exclusive) gamesmode_mode="performance" ;;
     *) echo "[wizado] Invalid --mode: $cli_mode" >&2; exit 2 ;;
   esac
 fi
@@ -94,6 +90,61 @@ require_cmd pkill
 gamescope_supports_arg() {
   local arg="$1"
   gamescope --help 2>&1 | grep -q -- "$arg"
+}
+
+notify_user() {
+  local msg="$1"
+  # Desktop notification (best effort)
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "wizado" "$msg" >/dev/null 2>&1 || true
+  fi
+  # Hyprland overlay notification (works even if notification daemon is flaky)
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl notify 3 6000 0 "$msg" >/dev/null 2>&1 || true
+  fi
+}
+
+tty_prereq_error() {
+  local msg="$1"
+  {
+    echo "[$(date -Is)] ERROR: $msg"
+  } >>"$LOG_FILE" 2>&1 || true
+  # Also write a single-line "last error" for quick debugging.
+  printf "%s\n" "$msg" >"${STATE_DIR}/last_error" 2>/dev/null || true
+  notify_user "$msg"
+  echo "[wizado] $msg" >&2
+}
+
+apply_default_steam_ui_for_mode() {
+  # If caller didn't explicitly set --steam-ui, pick defaults:
+  # - nested: normal Steam desktop UI
+  # - performance: Big Picture
+  if [[ -n "${steam_args}" ]]; then
+    return 0
+  fi
+  if [[ "$gamesmode_mode" == "performance" ]]; then
+    steam_args="-tenfoot"
+  else
+    steam_args="" # normal UI
+  fi
+}
+
+has_passwordless_openvt_chvt() {
+  # We specifically want NOPASSWD for these commands so a Hypr hotkey can work reliably.
+  # `sudo -n -l` will fail if it would prompt for a password.
+  if ! sudo -n -l /usr/bin/openvt >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! sudo -n -l /usr/bin/chvt >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+is_nvidia_system() {
+  command -v lspci >/dev/null 2>&1 || return 1
+  # Avoid SIGPIPE/pipefail issues by using process substitution instead of a pipeline with grep -q.
+  grep -qi "NVIDIA" < <(lspci -nn 2>/dev/null)
 }
 
 get_display() {
@@ -144,7 +195,7 @@ echo "$hypridle_was_running" > "${STATE_DIR}/hypridle_was_running"
 
 {
   echo "[$(date -Is)] enter-gamesmode start"
-  echo "steam_args=${steam_args}"
+  echo "steam_args=${steam_args:-<normal-ui>}"
   echo "mode=${gamesmode_mode} vt=${gamesmode_vt}"
   echo "output=${out_w}x${out_h}@${out_r} internal=${game_w}x${game_h}"
   echo "env: WAYLAND_DISPLAY=${WAYLAND_DISPLAY-} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR-} DISPLAY=${DISPLAY-} XDG_SESSION_TYPE=${XDG_SESSION_TYPE-}"
@@ -191,17 +242,6 @@ get_gpu_args() {
         args+=(--nvidia-hack)
       else
         echo "[$(date -Is)] NOTE: gamescope does not support --nvidia-hack; skipping." >>"$LOG_FILE" 2>&1 || true
-      fi
-      
-      # Check for nvidia-drm.modeset=1 (REQUIRED for gamescope TTY mode on NVIDIA)
-      if [[ "$gamesmode_mode" == "tty" ]]; then
-        if ! grep -q "nvidia-drm.modeset=1" /proc/cmdline; then
-           echo "[$(date -Is)] WARNING: nvidia-drm.modeset=1 is missing from kernel parameters!" >>"$LOG_FILE" 2>&1
-           echo "[$(date -Is)] Optimized launch (TTY mode) WILL FAIL on NVIDIA without this." >>"$LOG_FILE" 2>&1
-           echo "[$(date -Is)] Please add nvidia-drm.modeset=1 to your bootloader config." >>"$LOG_FILE" 2>&1
-           tty_prereq_error "TTY mode on NVIDIA requires kernel param nvidia-drm.modeset=1. Add it, reboot, then try again."
-           exit 1
-        fi
       fi
     else
       # Otherwise prefer AMD if present
@@ -255,28 +295,25 @@ clean_display_env_for_tty() {
   unset WAYLAND_DISPLAY
 }
 
-tty_prereq_error() {
-  local msg="$1"
-  {
-    echo "[$(date -Is)] ERROR: $msg"
-  } >>"$LOG_FILE" 2>&1 || true
-  if command -v notify-send >/dev/null 2>&1; then
-    notify-send "wizado" "$msg" >/dev/null 2>&1 || true
-  fi
-  echo "[wizado] $msg" >&2
-}
-
 # TTY mode is meant to be the "exclusive/max performance" path.
 # If prerequisites are missing, do NOT silently fall back to nested.
-if [[ "$gamesmode_mode" == "tty" ]]; then
-  if ! sudo -n true >/dev/null 2>&1; then
-    tty_prereq_error "TTY mode needs passwordless sudo for openvt/chvt. Re-run setup and install the sudoers drop-in."
+if [[ "$gamesmode_mode" == "performance" ]]; then
+  if ! has_passwordless_openvt_chvt; then
+    tty_prereq_error "Performance mode needs passwordless sudo for openvt/chvt. Run: wizado enable-tty"
     exit 1
+  fi
+  if is_nvidia_system; then
+    if ! grep -q "nvidia-drm.modeset=1" /proc/cmdline; then
+      tty_prereq_error "Performance mode on NVIDIA requires kernel param nvidia-drm.modeset=1. Run: wizado enable-tty, then reboot."
+      exit 1
+    fi
   fi
 fi
 
-if [[ "$gamesmode_mode" == "tty" ]]; then
-  # Exclusive DRM gamescope (no compositor overhead) by launching on a TTY.
+apply_default_steam_ui_for_mode
+
+if [[ "$gamesmode_mode" == "performance" ]]; then
+  # Exclusive DRM gamescope on a separate VT (Hyprland not in the render path).
   require_cmd openvt
   require_cmd chvt
   require_cmd fgconsole
@@ -285,13 +322,13 @@ if [[ "$gamesmode_mode" == "tty" ]]; then
   target_vt="$gamesmode_vt"
 
   {
-    echo "[$(date -Is)] mode=tty current_vt=${current_vt} target_vt=${target_vt}"
-    echo "note: tty mode requires passwordless sudo for openvt/chvt"
+    echo "[$(date -Is)] mode=performance current_vt=${current_vt} target_vt=${target_vt}"
+    echo "note: performance mode requires passwordless sudo for openvt/chvt"
   } >>"$LOG_FILE" 2>/dev/null || true
 
   # Passwordless sudo was already checked above; keep a defensive check here too.
-  sudo -n true >/dev/null 2>&1 || {
-    echo "[wizado] tty mode requires passwordless sudo for openvt/chvt (install sudoers drop-in via setup.sh)." >&2
+  has_passwordless_openvt_chvt || {
+    tty_prereq_error "Performance mode needs passwordless sudo for openvt/chvt. Run: wizado enable-tty"
     exit 1
   }
 
@@ -321,6 +358,10 @@ if [[ "$gamesmode_mode" == "tty" ]]; then
   echo "$!" > "$SESSION_FILE" 2>/dev/null || true
   exit 0
 fi
+
+# Default Steam UI for nested if we didn't already set it.
+# (We already called apply_default_steam_ui_for_mode above, but nested flows may still hit here in older runs.)
+apply_default_steam_ui_for_mode
 
 # Nested mode: Wayland backend tends to behave best under Hyprland; SDL is a fallback.
 primary_backend=(--backend wayland --expose-wayland --allow-deferred-backend)

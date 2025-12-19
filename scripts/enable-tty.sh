@@ -96,6 +96,11 @@ limine_enable_modeset() {
   local f="${LIMINE_CONF:-/boot/limine.conf}"
   [[ -f "$f" ]] || die "Limine config not found: $f"
 
+  # Safety: if a previous bad substitution wrote literal backrefs into the file, refuse to touch it.
+  if grep -q '\\\\1\\\\2' "$f" 2>/dev/null; then
+    die "Limine config appears corrupted (contains literal \\1\\2). Restore from a backup and re-run."
+  fi
+
   if grep -qE "(^|[[:space:]])nvidia-drm\\.modeset=1($|[[:space:]])" "$f" 2>/dev/null; then
     log "Kernel param already present in: $f"
     return 0
@@ -105,9 +110,36 @@ limine_enable_modeset() {
   run_sudo cp -a "$f" "$backup"
   log "Backed up to: $backup"
 
-  # Append to every cmdline: line (covers default entry + snapshots). This is safe and keeps entries consistent.
-  run_sudo sed -i -E 's/^([[:space:]]*cmdline:[[:space:]]*)(.*)$/\\1\\2 nvidia-drm.modeset=1/' "$f"
-  log "Updated Limine cmdline entries in: $f"
+  # Append to every cmdline: line (covers default entry + snapshots) using Python for correctness.
+  run_sudo bash -lc "python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path('${f}')
+lines = path.read_text(encoding='utf-8').splitlines(True)
+param = 'nvidia-drm.modeset=1'
+cmd_re = re.compile(r'^(\\s*cmdline:\\s*)(.*)\\s*$')
+
+out = []
+changed = 0
+for line in lines:
+    s = line.rstrip('\\n')
+    m = cmd_re.match(s)
+    if not m:
+        out.append(line)
+        continue
+    prefix, args = m.group(1), m.group(2)
+    if param in args.split():
+        out.append(line)
+        continue
+    out.append(prefix + (args + ' ' if args else '') + param + '\\n')
+    changed += 1
+
+path.write_text(''.join(out), encoding='utf-8')
+print(f'updated_cmdline_lines={changed}')
+PY"
+
+  log "Updated Limine cmdline entries in: $f (reboot required)"
 }
 
 enable_modeset_param() {

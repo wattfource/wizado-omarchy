@@ -9,10 +9,12 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 TARGET_DIR="${HOME}/.local/share/steam-launcher"
 SWITCH_BIN="${TARGET_DIR}/enter-gamesmode"
+SWITCH_TTY_BIN="${TARGET_DIR}/enter-gamesmode-tty"
 RETURN_BIN="${TARGET_DIR}/leave-gamesmode"
 
 UDEV_RULES_FILE="/etc/udev/rules.d/99-wizado-gaming.rules"
 NVIDIA_XORG_CONF="/etc/X11/xorg.conf.d/20-nvidia-performance.conf"
+SUDOERS_FILE="/etc/sudoers.d/wizado-gaming"
 
 # Find Hyprland bindings config
 BINDINGS_CONFIG=""
@@ -39,6 +41,7 @@ NVIDIA_VK_ID=""
 
 rollback_changes() {
   [[ -f "$SWITCH_BIN" ]] && rm -f "$SWITCH_BIN"
+  [[ -f "$SWITCH_TTY_BIN" ]] && rm -f "$SWITCH_TTY_BIN"
   [[ -f "$RETURN_BIN" ]] && rm -f "$RETURN_BIN"
   if [[ "$CREATED_TARGET_DIR" -eq 1 ]] && [[ -d "$TARGET_DIR" ]]; then
     rmdir "$TARGET_DIR" 2>/dev/null || true
@@ -499,11 +502,12 @@ check_user_groups() {
 
   groups | grep -q '\bvideo\b' || missing_groups+=("video")
   groups | grep -q '\binput\b' || missing_groups+=("input")
+  groups | grep -q '\btty\b' || missing_groups+=("tty")
 
   if ((${#missing_groups[@]})); then
     echo ""
     warn "User '$USER' missing from groups: ${missing_groups[*]}"
-    warn "Required for GPU access and controller support"
+    warn "Required for GPU access, controller support, and TTY switching"
     confirm_or_die "Add user to groups?"
 
     local groups_csv
@@ -514,6 +518,59 @@ check_user_groups() {
   else
     log "User groups: OK"
   fi
+}
+
+# ============================================================================
+# TTY Switching Permissions
+# ============================================================================
+
+setup_tty_permissions() {
+  log "Setting up TTY switching permissions..."
+  
+  if [[ -f "$SUDOERS_FILE" ]]; then
+    log "  Sudoers file already exists, checking..."
+    if grep -q "chvt" "$SUDOERS_FILE" 2>/dev/null && grep -q "openvt" "$SUDOERS_FILE" 2>/dev/null; then
+      log "  TTY permissions already configured"
+      return 0
+    fi
+  fi
+  
+  echo ""
+  warn "TTY mode requires passwordless sudo for chvt and openvt commands"
+  warn "This allows switching virtual terminals without password prompts"
+  confirm_or_die "Install sudoers rules for TTY switching?"
+  
+  # Create sudoers file with proper permissions
+  local temp_sudoers
+  temp_sudoers=$(mktemp)
+  
+  cat > "$temp_sudoers" <<EOF
+# Wizado Gaming - TTY Switching Permissions
+# Allows users to switch virtual terminals for dedicated gaming TTY mode
+# Created by wizado setup
+
+# Allow chvt (change virtual terminal) without password
+$USER ALL=(ALL) NOPASSWD: /usr/bin/chvt
+
+# Allow openvt (open command on new VT) without password
+$USER ALL=(ALL) NOPASSWD: /usr/bin/openvt
+EOF
+  
+  # Validate the sudoers file before installing
+  if ! visudo -c -f "$temp_sudoers" >/dev/null 2>&1; then
+    rm -f "$temp_sudoers"
+    warn "Generated sudoers file failed validation, skipping"
+    return 1
+  fi
+  
+  sudo install -o root -g root -m 440 "$temp_sudoers" "$SUDOERS_FILE" || {
+    rm -f "$temp_sudoers"
+    warn "Failed to install sudoers file"
+    return 1
+  }
+  
+  rm -f "$temp_sudoers"
+  log "  TTY switching permissions installed"
 }
 
 # ============================================================================
@@ -560,6 +617,12 @@ deploy_launchers() {
 
   install -Dm755 "${launcher_src}/enter-gamesmode" "$SWITCH_BIN" || die "Failed to install enter-gamesmode"
   install -Dm755 "${launcher_src}/leave-gamesmode" "$RETURN_BIN" || die "Failed to install leave-gamesmode"
+  
+  # Install TTY mode launcher if available
+  if [[ -f "${launcher_src}/enter-gamesmode-tty" ]]; then
+    install -Dm755 "${launcher_src}/enter-gamesmode-tty" "$SWITCH_TTY_BIN" || warn "Failed to install enter-gamesmode-tty"
+    log "TTY mode launcher installed"
+  fi
 
   log "Launchers installed to $TARGET_DIR"
 }
@@ -590,10 +653,12 @@ configure_shortcuts() {
     echo ""
     echo "# Gaming Mode bindings - added by wizado"
     if [[ "$bind_style" == "bindd" ]]; then
-      echo "bindd = SUPER SHIFT, S, Steam Gaming Mode, exec, $SWITCH_BIN"
+      echo "bindd = SUPER SHIFT, S, Steam Gaming Mode (nested), exec, $SWITCH_BIN"
+      echo "bindd = SUPER SHIFT, G, Steam Gaming Mode (TTY), exec, $SWITCH_TTY_BIN"
       echo "bindd = SUPER SHIFT, R, Exit Gaming Mode, exec, $RETURN_BIN"
     else
       echo "bind = SUPER SHIFT, S, exec, $SWITCH_BIN"
+      echo "bind = SUPER SHIFT, G, exec, $SWITCH_TTY_BIN"
       echo "bind = SUPER SHIFT, R, exec, $RETURN_BIN"
     fi
     echo "# End Gaming Mode bindings"
@@ -627,11 +692,16 @@ What this does:
   • Sets CPU governor to performance mode
   • Configures NVIDIA/AMD GPU for maximum performance
   • Sets up udev rules for user-level performance control
+  • Configures TTY switching permissions for dedicated gaming mode
   • Adds Hyprland keybindings
 
 Keybindings after install:
-  Super + Shift + S   Launch Steam in gamescope
+  Super + Shift + S   Launch Steam in gamescope (nested in Hyprland)
+  Super + Shift + G   Launch Steam in gamescope (dedicated TTY)
   Super + Shift + R   Exit gaming mode
+
+TTY mode runs gamescope directly on a separate virtual terminal without
+Hyprland, providing maximum performance and full VRR/FreeSync support.
 
 Re-run this script after hardware changes to update configuration.
 EOF
@@ -675,6 +745,7 @@ main() {
   setup_nvidia_performance
   setup_amd_performance
   setup_udev_rules
+  setup_tty_permissions
   
   maybe_grant_gamescope_cap
   deploy_launchers
@@ -697,8 +768,12 @@ main() {
   $HAS_AMD && echo "    • AMD performance level: high"
   echo ""
   echo "  Keybindings:"
-  echo "    Super + Shift + S   Launch Steam in gamescope"
+  echo "    Super + Shift + S   Launch Steam in gamescope (nested in Hyprland)"
+  echo "    Super + Shift + G   Launch Steam in gamescope (dedicated TTY)"
   echo "    Super + Shift + R   Exit gaming mode"
+  echo ""
+  echo "  TTY mode runs gamescope directly without Hyprland for maximum"
+  echo "  performance and better VRR/FreeSync support."
   echo ""
   echo "  Launchers: $TARGET_DIR"
   echo "  Config:    $BINDINGS_CONFIG"

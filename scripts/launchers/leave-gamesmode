@@ -2,9 +2,21 @@
 set -euo pipefail
 
 # wizado: exit gamescope gaming mode and return to desktop
+# Handles both nested (Hyprland) and dedicated TTY modes
 
 STATE_DIR="${HOME}/.cache/wizado"
 SESSION_FILE="${STATE_DIR}/session.pid"
+TTY_FILE="${STATE_DIR}/original_tty"
+GAMING_MODE_FILE="${STATE_DIR}/gaming_mode"
+
+# Detect gaming mode type
+get_gaming_mode() {
+  if [[ -f "$GAMING_MODE_FILE" ]]; then
+    cat "$GAMING_MODE_FILE" 2>/dev/null || echo "nested"
+  else
+    echo "nested"
+  fi
+}
 
 # Restore NVIDIA PowerMizer mode
 restore_nvidia_settings() {
@@ -33,6 +45,24 @@ restore_amd_settings() {
     rm -f "${STATE_DIR}/amd_perf_levels"
   fi
 }
+
+# Switch back to original TTY (for TTY mode)
+switch_to_original_tty() {
+  if [[ -f "$TTY_FILE" ]]; then
+    local original_tty
+    original_tty=$(cat "$TTY_FILE" 2>/dev/null || echo "1")
+    
+    if [[ -n "$original_tty" ]] && [[ "$original_tty" =~ ^[0-9]+$ ]]; then
+      # Try with sudo first, then without
+      sudo chvt "$original_tty" 2>/dev/null || chvt "$original_tty" 2>/dev/null || true
+    fi
+    
+    rm -f "$TTY_FILE"
+  fi
+}
+
+# Get gaming mode
+GAMING_MODE=$(get_gaming_mode)
 
 # Gracefully shutdown Steam first
 if pgrep -x steam >/dev/null 2>&1; then
@@ -70,12 +100,23 @@ if [[ -f "$SESSION_FILE" ]]; then
   rm -f "$SESSION_FILE"
 fi
 
+# Clean up TTY session script if it exists
+rm -f "${STATE_DIR}/gamescope-session.sh" 2>/dev/null || true
+
 # Clean up stale locks
 rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
 
 # Restore GPU settings
 restore_nvidia_settings
 restore_amd_settings
+
+# Switch back to original TTY if we were in TTY mode
+if [[ "$GAMING_MODE" == "tty" ]]; then
+  switch_to_original_tty
+fi
+
+# Clean up gaming mode marker
+rm -f "$GAMING_MODE_FILE" 2>/dev/null || true
 
 # Restart hypridle if it was running before gaming mode
 if [[ -f "${STATE_DIR}/hypridle_was_running" ]]; then

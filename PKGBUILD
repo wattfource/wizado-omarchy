@@ -1,30 +1,32 @@
 pkgname=wizado
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="Omarchy-only: Hyprland hotkey + gamescope Steam couch mode helper (Arch Linux)"
+pkgdesc="Steam gaming mode for Hyprland (Omarchy)"
 arch=('any')
 url="https://github.com/REPLACE_ME/wizado"
 license=('MIT')
-depends=('bash' 'curl' 'python')
+depends=('bash' 'python')
 optdepends=(
   'steam: Steam client'
-  'gamescope: gamescope micro-compositor'
-  'hyprland: Hyprland compositor (for keybind integration)'
-  'jq: used by some Omarchy default binds (optional)'
+  'gamescope: Gaming compositor'
+  'gamemode: System optimizations'
+  'mangohud: Performance overlay'
+  'hyprland: Hyprland compositor'
 )
 install="${pkgname}.install"
 
-source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+# For local development, use current directory
+# For AUR, replace with proper source URL
+source=()
+sha256sums=()
 
 package() {
-  # The source tarball extracts to "wizado-${pkgver}" directory
-  cd "${pkgname}-${pkgver}"
+  cd "${startdir}"
 
+  # Install scripts
   install -d "${pkgdir}/usr/share/${pkgname}"
   cp -a scripts "${pkgdir}/usr/share/${pkgname}/"
 
+  # Install CLI
   install -Dm755 "bin/wizado" "${pkgdir}/usr/bin/wizado"
 }
-
-

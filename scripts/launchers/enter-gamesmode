@@ -1,180 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# wizado: launch Steam in gamescope "couch mode"
-# - nested: gamescope under Hyprland (normal Steam UI)
-# - performance: gamescope on a separate VT (Big Picture; Hyprland not in the render path)
+# wizado: launch Steam in gamescope (nested mode under Hyprland)
 
 STATE_DIR="${HOME}/.cache/wizado"
 SESSION_FILE="${STATE_DIR}/session.pid"
 LOG_FILE="${STATE_DIR}/enter-gamesmode.log"
-MODE_FILE="${STATE_DIR}/mode"
-VT_FILE="${STATE_DIR}/vt"
 
 mkdir -p "$STATE_DIR"
 
-# Clear any stale error from previous runs so `last_error` reflects the latest attempt.
-rm -f "${STATE_DIR}/last_error" 2>/dev/null || true
-
-steam_args="" # default decided based on mode (nested=normal UI, performance=Big Picture)
-gamesmode_mode="nested" # nested|performance (legacy alias: tty)
-gamesmode_vt="2"
-
-usage() {
-  cat <<'EOF'
-enter-gamesmode (wizado)
-
-Usage:
-  enter-gamesmode [--mode nested|performance] [--vt N] [--steam-ui normal|bigpicture]
-
-Notes:
-  - nested: runs gamescope under your current compositor (Hyprland). No sudo required.
-  - performance: runs gamescope on a separate VT using the DRM backend.
-                 Requires passwordless sudo for /usr/bin/openvt and /usr/bin/chvt (enabled by wizado enable-tty).
-EOF
+log() {
+  echo "[$(date -Is)] $*" >> "$LOG_FILE" 2>/dev/null || true
 }
 
-cli_mode=""
-cli_vt=""
-cli_steam_ui=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --mode) cli_mode="${2:-}"; shift 2 ;;
-    --vt) cli_vt="${2:-}"; shift 2 ;;
-    --steam-ui) cli_steam_ui="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "[wizado] Unknown arg: $1" >&2; usage; exit 2 ;;
-  esac
-done
-
-if [[ -f "${HOME}/.gaming-mode.conf" ]]; then
-  # shellcheck disable=SC1090
-  source "${HOME}/.gaming-mode.conf" 2>/dev/null || true
-  case "${GAMESMODE_MODE:-}" in
-    performance|PERFORMANCE|tty|TTY|exclusive|EXCLUSIVE) gamesmode_mode="performance" ;;
-    nested|NESTED) gamesmode_mode="nested" ;;
-  esac
-  if [[ -n "${GAMESMODE_VT:-}" ]]; then
-    gamesmode_vt="${GAMESMODE_VT}"
-  fi
-  if [[ -n "${GAMESMODE_INTERNAL_W:-}" && -n "${GAMESMODE_INTERNAL_H:-}" ]]; then
-     game_w="${GAMESMODE_INTERNAL_W}"
-     game_h="${GAMESMODE_INTERNAL_H}"
-     custom_res=1
-  fi
-fi
-
-# Performance-mode GPU selection (persisted by wizado-menu Settings → Performance GPU)
-perf_drm_device="${PERFORMANCE_DRM_DEVICE:-}"
-perf_vk_device="${PERFORMANCE_VK_DEVICE:-}"
-
-if [[ -n "$cli_steam_ui" ]]; then
-  case "${cli_steam_ui,,}" in
-    normal) steam_args="" ;;
-    bigpicture) steam_args="-tenfoot" ;;
-    *) echo "[wizado] Invalid --steam-ui: $cli_steam_ui" >&2; exit 2 ;;
-  esac
-fi
-
-if [[ -n "$cli_mode" ]]; then
-  case "${cli_mode,,}" in
-    nested) gamesmode_mode="nested" ;;
-    performance|tty|exclusive) gamesmode_mode="performance" ;;
-    *) echo "[wizado] Invalid --mode: $cli_mode" >&2; exit 2 ;;
-  esac
-fi
-
-if [[ -n "$cli_vt" ]]; then
-  gamesmode_vt="$cli_vt"
-fi
-
-require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "[wizado] Missing: $1" >&2; exit 1; }; }
-require_cmd gamescope
-require_cmd steam
-require_cmd pgrep
-require_cmd pkill
-require_cmd timeout
-
-gamescope_supports_arg() {
-  local arg="$1"
-  gamescope --help 2>&1 | grep -q -- "$arg"
-}
-
-notify_user() {
-  local msg="$1"
-  # Desktop notification (best effort)
-  if command -v notify-send >/dev/null 2>&1; then
-    notify-send "wizado" "$msg" >/dev/null 2>&1 || true
-  fi
-  # Hyprland overlay notification (works even if notification daemon is flaky)
-  if command -v hyprctl >/dev/null 2>&1; then
-    hyprctl notify 3 6000 0 "$msg" >/dev/null 2>&1 || true
-  fi
-}
-
-tty_prereq_error() {
-  local msg="$1"
-  {
-    echo "[$(date -Is)] ERROR: $msg"
-  } >>"$LOG_FILE" 2>&1 || true
-  # Also write a single-line "last error" for quick debugging.
-  printf "%s\n" "$msg" >"${STATE_DIR}/last_error" 2>/dev/null || true
-  notify_user "$msg"
-  echo "[wizado] $msg" >&2
-}
-
-apply_default_steam_ui_for_mode() {
-  # If caller didn't explicitly set --steam-ui, pick defaults:
-  # - nested: normal Steam desktop UI
-  # - performance: Big Picture
-  if [[ -n "${steam_args}" ]]; then
-    return 0
-  fi
-  if [[ "$gamesmode_mode" == "performance" ]]; then
-    steam_args="-tenfoot"
-  else
-    steam_args="" # normal UI
-  fi
-}
-
-has_passwordless_openvt_chvt() {
-  # We specifically want NOPASSWD for these commands so a Hypr hotkey can work reliably.
-  # `sudo -n -l` will fail if it would prompt for a password.
-  if ! sudo -n -l /usr/bin/openvt >/dev/null 2>&1; then
-    return 1
-  fi
-  if ! sudo -n -l /usr/bin/chvt >/dev/null 2>&1; then
-    return 1
-  fi
-  return 0
-}
-
-is_nvidia_system() {
-  command -v lspci >/dev/null 2>&1 || return 1
-  # Avoid SIGPIPE/pipefail issues by using process substitution instead of a pipeline with grep -q.
-  grep -qi "NVIDIA" < <(lspci -nn 2>/dev/null)
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "[wizado] Missing required command: $1" >&2
+    exit 1
+  }
 }
 
 get_display() {
-  # Output: "W H R"
+  # Output: "W H R" (width height refresh)
   local w=1920 h=1080 r=60
 
   if command -v hyprctl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local j
     j="$(hyprctl monitors -j 2>/dev/null || true)"
     if [[ -n "$j" ]]; then
-      read -r w h r <<<"$(echo "$j" | python3 -c "
-import json,sys
+      read -r w h r <<< "$(echo "$j" | python3 -c "
+import json, sys
 try:
-  d=json.load(sys.stdin)
-  m=d[0] if d else {}
-  w=int(m.get('width',1920))
-  h=int(m.get('height',1080))
-  rr=float(m.get('refreshRate',60))
-  r=int(round(rr))
-  print(w,h,r)
+    d = json.load(sys.stdin)
+    m = d[0] if d else {}
+    w = int(m.get('width', 1920))
+    h = int(m.get('height', 1080))
+    r = int(round(m.get('refreshRate', 60)))
+    print(w, h, r)
 except Exception:
-  print('1920 1080 60')
+    print('1920 1080 60')
 ")"
     fi
   fi
@@ -182,308 +46,72 @@ except Exception:
   echo "$w $h $r"
 }
 
-read -r out_w out_h out_r <<<"$(get_display)"
+require_cmd steam
+require_cmd gamescope
+require_cmd pgrep
+require_cmd pkill
 
-# Default to native resolution
-game_w="$out_w"
-game_h="$out_h"
+# Get display info
+read -r WIDTH HEIGHT REFRESH <<< "$(get_display)"
 
-# Only if custom resolution was explicitly set via config, apply it.
-if [[ "${custom_res:-0}" -eq 1 ]]; then
-  # Values were already set above when loading config
-  :
-fi
+log "Starting enter-gamesmode"
+log "Display: ${WIDTH}x${HEIGHT}@${REFRESH}Hz"
 
+# Stop hypridle during gaming to prevent screen blanking
 hypridle_was_running="0"
 if pgrep -x hypridle >/dev/null 2>&1; then
   hypridle_was_running="1"
   pkill hypridle 2>/dev/null || true
+  log "Stopped hypridle"
 fi
 echo "$hypridle_was_running" > "${STATE_DIR}/hypridle_was_running"
 
-{
-  echo "[$(date -Is)] enter-gamesmode start"
-  echo "steam_args=${steam_args:-<normal-ui>}"
-  echo "mode=${gamesmode_mode} vt=${gamesmode_vt}"
-  echo "output=${out_w}x${out_h}@${out_r} internal=${game_w}x${game_h}"
-  echo "env: WAYLAND_DISPLAY=${WAYLAND_DISPLAY-} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR-} DISPLAY=${DISPLAY-} XDG_SESSION_TYPE=${XDG_SESSION_TYPE-}"
-} >>"$LOG_FILE" 2>/dev/null || true
-
-# If Steam is already running, request a clean shutdown so it doesn't "reuse" the existing instance.
+# If Steam is already running, shut it down cleanly first
 if pgrep -x steam >/dev/null 2>&1; then
-  echo "[$(date -Is)] Steam is running, attempting clean shutdown..." >>"$LOG_FILE" 2>&1 || true
-  steam -shutdown >>"$LOG_FILE" 2>&1 || true
+  log "Steam already running, shutting down..."
+  steam -shutdown >/dev/null 2>&1 || true
   
-  # Wait up to 10 seconds for clean shutdown
-  for i in {1..20}; do
-    if ! pgrep -x steam >/dev/null 2>&1; then
-      echo "[$(date -Is)] Steam shut down cleanly." >>"$LOG_FILE" 2>&1 || true
-      break
-    fi
+  # Wait for clean shutdown
+  for _ in {1..20}; do
+    pgrep -x steam >/dev/null 2>&1 || break
     sleep 0.5
   done
   
-  # If still running, be more aggressive
+  # Force kill if still running
   if pgrep -x steam >/dev/null 2>&1; then
-    echo "[$(date -Is)] Steam still running, using pkill..." >>"$LOG_FILE" 2>&1 || true
-    pkill -x steam 2>/dev/null || true
-    sleep 2
     pkill -9 -x steam 2>/dev/null || true
     pkill -9 -x steamwebhelper 2>/dev/null || true
   fi
 fi
 
-echo "$gamesmode_mode" > "$MODE_FILE" 2>/dev/null || true
-echo "$gamesmode_vt" > "$VT_FILE" 2>/dev/null || true
+# Clean up any stale gamescope locks
+rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
 
-# Detect GPU and prepare gamescope arguments
-get_gpu_args() {
-  local args=()
-
-  # If user selected a specific GPU for performance mode, prefer its Vulkan device too.
-  if [[ "$gamesmode_mode" == "performance" && -n "${perf_vk_device}" ]]; then
-    args+=(--prefer-vk-device "$perf_vk_device")
-    # NVIDIA-specific hack flag only if supported by this gamescope build.
-    if [[ "${perf_vk_device,,}" == 10de:* ]]; then
-      if gamescope_supports_arg "--nvidia-hack"; then
-        args+=(--nvidia-hack)
-      else
-        echo "[$(date -Is)] NOTE: gamescope does not support --nvidia-hack; skipping." >>"$LOG_FILE" 2>&1 || true
-      fi
-    fi
-    echo "${args[@]}"
-    return 0
-  fi
-
-  if command -v lspci >/dev/null 2>&1; then
-    # Prefer NVIDIA if present
-    local nv
-    nv="$(lspci -nn | grep -i "NVIDIA" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])' | head -n1 || true)"
-    if [[ -n "$nv" ]]; then
-      args+=(--prefer-vk-device "$nv")
-      # NVIDIA-specific hack flag only if supported by this gamescope build.
-      if gamescope_supports_arg "--nvidia-hack"; then
-        args+=(--nvidia-hack)
-      else
-        echo "[$(date -Is)] NOTE: gamescope does not support --nvidia-hack; skipping." >>"$LOG_FILE" 2>&1 || true
-      fi
-    else
-      # Otherwise prefer AMD if present
-      local amd
-      amd="$(lspci -nn | grep -iE "AMD|ATI" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])' | head -n1 || true)"
-      if [[ -n "$amd" ]]; then
-        args+=(--prefer-vk-device "$amd")
-      fi
-    fi
-  fi
-  echo "${args[@]}"
-}
-
-gpu_args=($(get_gpu_args))
-
-base_gamescope_args=(
-  -e
-  --keep-alive
-  -f
-  -w "$game_w" -h "$game_h"
-  -W "$out_w" -H "$out_h"
-  -r "$out_r"
-  --force-grab-cursor
-  --force-windows-fullscreen
-  "${gpu_args[@]}"
+# Build gamescope command
+# Using wayland backend (nested under Hyprland)
+GAMESCOPE_ARGS=(
+  -e                          # Steam integration
+  -f                          # Fullscreen
+  -w "$WIDTH" -h "$HEIGHT"    # Internal resolution
+  -W "$WIDTH" -H "$HEIGHT"    # Output resolution
+  -r "$REFRESH"               # Refresh rate
+  --force-grab-cursor         # Capture cursor
+  --force-windows-fullscreen  # Force fullscreen for windows
 )
 
-# Consolidation of environment variables to prevent Vulkan layer conflicts
-# and ensure Steam/Gamescope can find necessary files.
-clean_vulkan_env() {
-  # Disable layers that often interfere with Gamescope's own WSI layer
-  export DISABLE_MANGOHUD=1
-  export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
-  export DISABLE_LAYER_NV_OPTIMUS_1=1
-  export DISABLE_VK_LAYER_NV_optimus_1=1
-  export DISABLE_LAYER_MESA_ANTI_LAG=1
-  export NODEVICE_SELECT=1
-  
-  # Disable the Gamescope WSI layer by default in the parent environment.
-  # Gamescope will re-enable it for the child process (Steam/game) as needed.
-  export DISABLE_GAMESCOPE_WSI=1
-  
-  # Reset Vulkan layer paths to prevent accidental loading of global layers
-  export VK_LAYER_PATH=""
-  export VK_INSTANCE_LAYERS=""
-}
-
-# In exclusive TTY mode we must not inherit the desktop compositor's display env.
-clean_display_env_for_tty() {
-  unset DISPLAY
-  unset WAYLAND_DISPLAY
-}
-
-# TTY mode is meant to be the "exclusive/max performance" path.
-# If prerequisites are missing, do NOT silently fall back to nested.
-if [[ "$gamesmode_mode" == "performance" ]]; then
-  if ! has_passwordless_openvt_chvt; then
-    tty_prereq_error "Performance mode needs passwordless sudo for openvt/chvt. Run: wizado enable-tty"
-    exit 1
-  fi
-  if is_nvidia_system; then
-    if ! grep -q "nvidia-drm.modeset=1" /proc/cmdline; then
-      tty_prereq_error "Performance mode on NVIDIA requires kernel param nvidia-drm.modeset=1. Run: wizado enable-tty, then reboot."
-      exit 1
-    fi
-  fi
+# Launch with gamemode if available
+LAUNCH_CMD="/usr/bin/gamescope"
+if command -v gamemoderun >/dev/null 2>&1; then
+  LAUNCH_CMD="gamemoderun /usr/bin/gamescope"
 fi
 
-apply_default_steam_ui_for_mode
+log "Launching: $LAUNCH_CMD ${GAMESCOPE_ARGS[*]} -- steam -tenfoot"
 
-if [[ "$gamesmode_mode" == "performance" ]]; then
-  # Exclusive DRM gamescope on a separate VT (Hyprland not in the render path).
-  require_cmd openvt
-  require_cmd chvt
-  require_cmd fgconsole
+# Launch gamescope with Steam Big Picture
+setsid $LAUNCH_CMD "${GAMESCOPE_ARGS[@]}" -- /usr/bin/steam -tenfoot >> "$LOG_FILE" 2>&1 &
+GAMESCOPE_PID=$!
 
-  current_vt="$(fgconsole 2>/dev/null || echo "1")"
-  target_vt="$gamesmode_vt"
-
-  # Select which DRM/KMS device to use in performance mode (WLR_DRM_DEVICES).
-  #
-  # On multi-GPU systems, failing to pin the KMS device can wedge the display stack
-  # (black screen / hard lock). We prefer an explicit user selection via wizado-menu.
-  drm_device=""
-
-  # Count DRM cards (best-effort). If multiple exist and user hasn't selected one, require selection.
-  drm_card_count="0"
-  if compgen -G "/dev/dri/by-path/*-card" >/dev/null 2>&1; then
-    # shellcheck disable=SC2012
-    drm_card_count="$(ls -1 /dev/dri/by-path/*-card 2>/dev/null | wc -l | tr -d ' ')"
-  else
-    # shellcheck disable=SC2012
-    drm_card_count="$(ls -1d /sys/class/drm/card[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
-  fi
-
-  if [[ -n "${perf_drm_device}" ]]; then
-    if [[ -e "${perf_drm_device}" ]]; then
-      drm_device="${perf_drm_device}"
-    else
-      tty_prereq_error "Selected performance GPU is missing: ${perf_drm_device}. Open wizado-menu → Settings → Performance GPU."
-      exit 1
-    fi
-  else
-    if [[ "${drm_card_count}" -ge 2 ]]; then
-      tty_prereq_error "Performance mode needs a selected GPU on multi-GPU systems. Open wizado-menu → Settings → Performance GPU."
-      exit 1
-    fi
-    # Single-GPU fallback: try NVIDIA by-path if present; else /dev/dri/card0.
-    if [[ -e /dev/dri/by-path/pci-0000:01:00.0-card ]]; then
-      drm_device="/dev/dri/by-path/pci-0000:01:00.0-card"
-    elif [[ -e /dev/dri/card0 ]]; then
-      drm_device="/dev/dri/card0"
-    fi
-  fi
-
-  {
-    echo "[$(date -Is)] mode=performance current_vt=${current_vt} target_vt=${target_vt}"
-    echo "note: performance mode requires passwordless sudo for openvt/chvt"
-    echo "drm_device=${drm_device:-<auto>}"
-    echo "vk_device=${perf_vk_device:-<auto>}"
-  } >>"$LOG_FILE" 2>/dev/null || true
-
-  # Passwordless sudo was already checked above; keep a defensive check here too.
-  has_passwordless_openvt_chvt || {
-    tty_prereq_error "Performance mode needs passwordless sudo for openvt/chvt. Run: wizado enable-tty"
-    exit 1
-  }
-
-  user_name="$USER"
-  user_id=$(id -u)
-
-  # Launching in a subshell to handle VT switching more reliably
-  (
-    # Ensure Steam is REALLY gone before we switch VTs
-    pkill -9 -x steam 2>/dev/null || true
-    sleep 1
-
-    # We use a sub-shell command inside openvt to ensure environment and logging are correct
-    cmd="env PATH=\"$PATH\" HOME=\"$HOME\" USER=\"$user_name\" XDG_RUNTIME_DIR=\"/run/user/$user_id\" XDG_DATA_DIRS=\"/usr/local/share:/usr/share\" DISABLE_MANGOHUD=1 DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1 DISABLE_LAYER_NV_OPTIMUS_1=1 DISABLE_VK_LAYER_NV_optimus_1=1 DISABLE_LAYER_MESA_ANTI_LAG=1 DISABLE_GAMESCOPE_WSI=1 NODEVICE_SELECT=1 VK_LAYER_PATH=\"\" VK_INSTANCE_LAYERS=\"\" DISPLAY= WAYLAND_DISPLAY="
-    if [[ -n "$drm_device" ]]; then
-      cmd="${cmd} WLR_DRM_DEVICES=\"$drm_device\""
-    fi
-    cmd="${cmd} gamescope --backend drm ${base_gamescope_args[*]} -- steam ${steam_args}"
-
-    echo "[$(date -Is)] Launching gamescope on VT ${target_vt}..." >>"$LOG_FILE" 2>&1
-    # Run openvt in the background so we can implement a watchdog that switches back if launch stalls.
-    sudo -n openvt -c "$target_vt" -s -f -w -- sudo -u "$user_name" bash -c "$cmd" >>"$LOG_FILE" 2>&1 &
-    openvt_pid=$!
-    echo "[$(date -Is)] openvt started (pid=${openvt_pid})" >>"$LOG_FILE" 2>&1
-
-    # Watchdog: if we switched to the target VT but gamescope(drm) doesn't appear within a few seconds,
-    # switch back to the original VT and kill openvt to avoid a stuck black screen.
-    (
-      sleep 6
-      if ! kill -0 "$openvt_pid" >/dev/null 2>&1; then
-        exit 0
-      fi
-      if ! pgrep -af gamescope | grep -q -- '--backend drm'; then
-        echo "[$(date -Is)] ERROR: performance launch appears stalled (no gamescope --backend drm). Switching back to VT ${current_vt} and killing openvt." >>"$LOG_FILE" 2>&1
-        printf "%s\n" "Performance mode appears stalled; switched back to VT ${current_vt}. Check ${LOG_FILE}." >"${STATE_DIR}/last_error" 2>/dev/null || true
-        sudo -n chvt "$current_vt" >/dev/null 2>&1 || true
-        kill "$openvt_pid" >/dev/null 2>&1 || true
-        sleep 0.5
-        kill -9 "$openvt_pid" >/dev/null 2>&1 || true
-      fi
-    ) >/dev/null 2>&1 &
-
-    wait "$openvt_pid" || {
-      rc=$?
-      echo "[$(date -Is)] openvt/gamescope exited non-zero (rc=${rc})." >>"$LOG_FILE" 2>&1
-      printf "%s\n" "Performance mode failed to start (openvt exit ${rc}). Check ${LOG_FILE}." >"${STATE_DIR}/last_error" 2>/dev/null || true
-    }
-    echo "[$(date -Is)] openvt session ended." >>"$LOG_FILE" 2>&1
-    
-    # After gamescope exits or fails, switch back to the desktop VT.
-    echo "[$(date -Is)] Switching back to VT ${current_vt}..." >>"$LOG_FILE" 2>&1
-    sleep 1
-    sudo -n chvt "$current_vt" >/dev/null 2>&1 || true
-  ) &
-  echo "$!" > "$SESSION_FILE" 2>/dev/null || true
-  exit 0
-fi
-
-# Default Steam UI for nested if we didn't already set it.
-# (We already called apply_default_steam_ui_for_mode above, but nested flows may still hit here in older runs.)
-apply_default_steam_ui_for_mode
-
-# Nested mode: Wayland backend tends to behave best under Hyprland; SDL is a fallback.
-primary_backend=(--backend wayland --expose-wayland --allow-deferred-backend)
-fallback_backend=(--backend sdl -b)
-
-{
-  echo "primary_backend=${primary_backend[*]}"
-  echo "fallback_backend=${fallback_backend[*]}"
-  echo "base_gamescope_args=${base_gamescope_args[*]}"
-} >>"$LOG_FILE" 2>/dev/null || true
-
-# Launch gamescope
-clean_vulkan_env
-
-{
-  echo "[$(date -Is)] nested launch env: WAYLAND_DISPLAY=${WAYLAND_DISPLAY-} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR-}"
-} >>"$LOG_FILE" 2>/dev/null || true
-
-setsid gamescope "${primary_backend[@]}" "${base_gamescope_args[@]}" -- steam ${steam_args} >>"$LOG_FILE" 2>&1 &
-gs_pid=$!
-echo "$gs_pid" > "$SESSION_FILE"
-
-(
-  sleep 2
-  if ! kill -0 "$gs_pid" 2>/dev/null; then
-    echo "[$(date -Is)] gamescope died within 2s; retrying with ${fallback_backend[*]}" >>"$LOG_FILE" 2>/dev/null || true
-    clean_vulkan_env
-    setsid gamescope "${fallback_backend[@]}" "${base_gamescope_args[@]}" -- steam "${steam_args}" >>"$LOG_FILE" 2>&1 &
-    echo "$!" > "$SESSION_FILE" 2>/dev/null || true
-  fi
-) >/dev/null 2>&1 &
+echo "$GAMESCOPE_PID" > "$SESSION_FILE"
+log "Gamescope started with PID $GAMESCOPE_PID"
 
 exit 0
-
-

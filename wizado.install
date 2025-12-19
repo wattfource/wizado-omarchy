@@ -1,28 +1,29 @@
 post_install() {
-  cat <<'EOF'
-wizado installed.
-
-Next step (required):
-  Run: wizado setup
-
-This will:
-  - install user launchers under ~/.local/share/steam-launcher/
-  - write a Hyprland include under ~/.config/hypr/conf.d/wizado.conf
-  - add a 'source = ... # wizado:source' line to ~/.config/hypr/hyprland.conf (if needed)
-
-Default hotkeys (can be changed later):
-  - Super+Shift+S : enter couch mode (Nested mode: gamescope under Hyprland)
-  - Super+Shift+R : exit couch mode (quit Steam + gamescope)
-
-Omarchy-only: exclusive (no compositor overhead) TTY mode:
-  - Run: wizado enable-tty
-  - Reboot
-  - Then use: Super+Alt+S (Performance mode)
-EOF
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  WIZADO INSTALLED"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "  Run 'wizado setup' to configure gaming mode."
+  echo ""
+  echo "  This will:"
+  echo "    - Install Steam and gaming dependencies"
+  echo "    - Add Hyprland keybindings"
+  echo ""
+  echo "  Keybindings (after setup):"
+  echo "    Super + Shift + S   Launch Steam in gamescope"
+  echo "    Super + Shift + R   Exit gaming mode"
+  echo ""
 }
 
 post_upgrade() {
   post_install
 }
 
-
+pre_remove() {
+  # Run removal script if present
+  if command -v wizado >/dev/null 2>&1; then
+    echo "Running wizado remove..."
+    wizado remove --yes 2>/dev/null || true
+  fi
+}

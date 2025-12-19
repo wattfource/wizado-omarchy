@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# wizado: Steam gaming mode for Hyprland
+
 # Detect if running from source or installed
 if [[ -d "./scripts" ]]; then
   ROOT="."
-else
+elif [[ -d "/usr/share/wizado/scripts" ]]; then
   ROOT="/usr/share/wizado"
+else
+  echo "Error: Cannot find wizado scripts" >&2
+  exit 1
 fi
 
 usage() {
   cat <<'EOF'
-wizado
+wizado - Steam Gaming Mode for Hyprland
 
 Usage:
-  wizado setup [--yes|-y] [--dry-run]
-  wizado enable-tty [--yes|-y] [--dry-run]
-  wizado update [--yes|-y] [--dry-run] [--system]
-  wizado remove [--yes|-y] [--dry-run]
+  wizado setup [--yes|-y] [--dry-run]    Install gaming mode
+  wizado remove [--yes|-y] [--dry-run]   Remove gaming mode
+  wizado help                            Show this help
 
-Notes:
-  - Omarchy-only (Arch Linux + Hyprland + Omarchy defaults).
-  - `setup` writes user files (launchers + Hyprland include) under your $HOME.
-  - `enable-tty` enables prerequisites for "exclusive TTY" mode (Super+Alt+S): sudoers + nvidia-drm.modeset=1 (Limine cmdline).
+Keybindings (after setup):
+  Super + Shift + S   Launch Steam in gamescope
+  Super + Shift + R   Exit gaming mode
 EOF
 }
 
@@ -29,12 +32,8 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-  setup) exec "${ROOT}/scripts/setup.sh" "$@" ;;
-  enable-tty) exec "${ROOT}/scripts/enable-tty.sh" "$@" ;;
-  update) exec "${ROOT}/scripts/update.sh" "$@" ;;
-  remove) exec "${ROOT}/scripts/remove.sh" "$@" ;;
-  -h|--help|"") usage; exit 0 ;;
+  setup)   exec "${ROOT}/scripts/setup.sh" "$@" ;;
+  remove)  exec "${ROOT}/scripts/remove.sh" "$@" ;;
+  help|-h|--help|"") usage; exit 0 ;;
   *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
 esac
-
-

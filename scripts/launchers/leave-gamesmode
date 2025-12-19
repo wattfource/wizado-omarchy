@@ -1,52 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# wizado: exit gamescope "couch mode" and return to desktop
+# wizado: exit gamescope gaming mode and return to desktop
 
 STATE_DIR="${HOME}/.cache/wizado"
 SESSION_FILE="${STATE_DIR}/session.pid"
-MODE_FILE="${STATE_DIR}/mode"
 
-mode="nested"
-if [[ -f "$MODE_FILE" ]]; then
-  mode="$(cat "$MODE_FILE" 2>/dev/null || echo "nested")"
+# Gracefully shutdown Steam first
+if pgrep -x steam >/dev/null 2>&1; then
+  steam -shutdown >/dev/null 2>&1 || true
+  
+  # Wait for clean shutdown
+  for _ in {1..10}; do
+    pgrep -x steam >/dev/null 2>&1 || break
+    sleep 0.5
+  done
 fi
 
-# Always stop Steam cleanly first, so switching between Wayland and gamescope is reliable.
-if command -v steam >/dev/null 2>&1; then
-  if pgrep -x steam >/dev/null 2>&1; then
-    steam -shutdown >/dev/null 2>&1 || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      pgrep -x steam >/dev/null 2>&1 || break
-      sleep 0.5
-    done
-  fi
-fi
-
-# Best-effort cleanup if Steam is stubborn.
+# Force kill Steam if still running
 pkill -x steam 2>/dev/null || true
 pkill -x steamwebhelper 2>/dev/null || true
+sleep 0.5
+pkill -9 -x steam 2>/dev/null || true
+pkill -9 -x steamwebhelper 2>/dev/null || true
 
+# Kill gamescope
+pkill -x gamescope 2>/dev/null || true
+pkill -x gamescopereaper 2>/dev/null || true
+sleep 0.5
+pkill -9 -x gamescope 2>/dev/null || true
+pkill -9 -x gamescopereaper 2>/dev/null || true
+
+# Kill session PID if recorded
 if [[ -f "$SESSION_FILE" ]]; then
   pid="$(cat "$SESSION_FILE" 2>/dev/null || true)"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
     kill "$pid" 2>/dev/null || true
-    for _ in 1 2 3 4; do
-      sleep 0.5
-      kill -0 "$pid" 2>/dev/null || break
-    done
+    sleep 0.5
     kill -9 "$pid" 2>/dev/null || true
   fi
+  rm -f "$SESSION_FILE"
 fi
 
-# In performance mode (separate VT), we don't reliably own the gamescope PID; try a best-effort kill.
-if [[ "$mode" == "performance" || "$mode" == "tty" ]]; then
-  pkill -x gamescope 2>/dev/null || true
-  # Also stop any openvt wrapper that is running a gamescope DRM session.
-  # This helps ensure the VT session doesn't linger when exiting.
-  pkill -f "openvt .*--backend drm" 2>/dev/null || true
-fi
+# Clean up stale locks
+rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
 
+# Restart hypridle if it was running before gaming mode
 if [[ -f "${STATE_DIR}/hypridle_was_running" ]]; then
   was="$(cat "${STATE_DIR}/hypridle_was_running" 2>/dev/null || echo "0")"
   if [[ "$was" == "1" ]] && command -v hypridle >/dev/null 2>&1; then
@@ -55,9 +54,7 @@ if [[ -f "${STATE_DIR}/hypridle_was_running" ]]; then
       disown || true
     fi
   fi
+  rm -f "${STATE_DIR}/hypridle_was_running"
 fi
 
-rm -f "$SESSION_FILE" 2>/dev/null || true
 exit 0
-
-

@@ -1,129 +1,77 @@
-# Wizado 🧙‍♂️
+# Wizado
 
-**Wizado** is an **Omarchy-only** "Couch Mode" companion for Hyprland on Arch Linux.
+Steam gaming mode for Hyprland on Arch Linux (Omarchy).
 
-It launches Steam in a dedicated `gamescope` session and wires up Omarchy’s Hyprland + Waybar integration.
+Launches Steam in a gamescope session with simple keybindings.
 
 ## Features
 
-- 🎮 **Seamless Launcher:** Launch Steam Big Picture / Gamepad UI in an optimized `gamescope` window.
-- ⚡ **Performance Mode:** Auto-applies `gamemode`, real-time scheduling (`cap_sys_nice`), and GPU optimizations (AMD/NVIDIA).
-- 🖥️ **Smart Resolution:** Auto-detects native resolution or allows TUI-based configuration for upscaling (e.g., render at 1080p, output at 4K).
-- ⚙️ **TUI Settings:** Built-in terminal menu for configuration.
-- 🍫 **Waybar Integration:** Adds a gamepad icon to Waybar for mouse-driven launching and status.
-- ⌨️ **Hyprland Bindings:**
-  - `Super + Shift + S`: Launch Steam (Nested mode)
-  - `Super + Alt + S`: Launch Steam (Performance mode)
-  - `Super + Shift + R`: Exit/Kill Session
+- Launch Steam Big Picture in gamescope with `Super + Shift + S`
+- Exit gaming mode with `Super + Shift + R`
+- Auto-detects display resolution and refresh rate
+- Suspends hypridle during gaming to prevent screen blanking
+- Uses gamemode for system optimizations (if installed)
 
-## Requirements (by design)
+## Requirements
 
-Wizado is designed **only** for:
-- **Omarchy (Arch Linux)**
-- **Hyprland**
-- **Limine + UKI** boot flow (Omarchy default), with kernel cmdline in `/boot/limine.conf`
+- Arch Linux with Omarchy
+- Hyprland
+- Steam
+- gamescope
 
 ## Installation
 
-### Local Install (Development / Manual)
-
-If you have cloned the repository and want to install it directly:
+### From Source
 
 ```bash
-# Run the setup script directly
+git clone https://github.com/REPLACE_ME/wizado.git
+cd wizado
 ./scripts/setup.sh
 ```
 
-This will:
-1. Check and install dependencies (Steam, gamescope, drivers, etc.).
-2. Configure permissions (user groups, udev rules).
-3. Install launcher scripts to `~/.local/share/steam-launcher`.
-4. Add Hyprland bindings and Waybar configuration.
-
-### Arch Package (Recommended)
-
-To install it as a system package (cleaner removal/updates):
+### As Arch Package
 
 ```bash
-# Build and install using makepkg
 makepkg -si
+wizado setup
 ```
-
-## Updating
-
-To update your installation after pulling new changes:
-
-**Manual Method:**
-```bash
-git pull
-./scripts/setup.sh
-```
-
-**Package Method:**
-```bash
-git pull
-makepkg -si
-```
-
-## Submitting to AUR
-
-Instructions for the package maintainer to submit/update the AUR package.
-
-1. **Update Version:**
-   Edit `PKGBUILD` and update `pkgver` and `pkgrel` if necessary.
-
-2. **Generate Checksums:**
-   If source files changed (though currently it skips sums for local dev), update them:
-   ```bash
-   updpkgsums
-   ```
-
-3. **Generate .SRCINFO:**
-   This is required for the AUR to parse metadata.
-   ```bash
-   makepkg --printsrcinfo > .SRCINFO
-   ```
-
-4. **Test Build:**
-   Ensure it builds in a clean environment.
-   ```bash
-   makepkg -f
-   ```
-
-5. **Push to AUR:**
-   (Assuming you have the AUR git repo cloned)
-   ```bash
-   # Copy PKGBUILD and .SRCINFO to your AUR repo folder
-   cp PKGBUILD .SRCINFO /path/to/wizado-aur/
-   cd /path/to/wizado-aur/
-   git add PKGBUILD .SRCINFO
-   git commit -m "Update to v0.1.x"
-   git push
-   ```
 
 ## Usage
 
-- **Launch:** Press `Super + Shift + S` or click the  icon in Waybar.
-- **Settings:** Click the Waybar icon to open the menu, or select "Settings" before launching.
-- **Exit:** Press `Super + Shift + R` or use the "Exit" option in the Steam power menu.
+After installation:
 
-### Enable Performance Mode (Super+Alt+S)
+| Keybinding | Action |
+|------------|--------|
+| `Super + Shift + S` | Launch Steam in gamescope |
+| `Super + Shift + R` | Exit gaming mode |
 
-To make `Super + Alt + S` truly “exclusive” (**Performance mode**: separate VT + DRM backend, Hyprland not in the render path), run:
+## Uninstall
 
 ```bash
-wizado enable-tty
+wizado remove
 ```
 
-Then reboot. This installs:
-- A sudoers drop-in for passwordless `openvt/chvt`
-- `nvidia-drm.modeset=1` into `/boot/limine.conf` (required for NVIDIA DRM mode)
+Or if installed from source:
 
-### Select the Performance GPU (multi-GPU systems)
+```bash
+./scripts/remove.sh
+```
 
-If your system has **more than one GPU** (e.g. AMD iGPU + NVIDIA dGPU), performance mode must know which **DRM/KMS device** to use.
+## What Gets Installed
 
-Open the menu (Waybar gamepad icon) and set:
-- **Settings → Performance GPU**
+- Launcher scripts in `~/.local/share/steam-launcher/`
+- Keybindings added to your Hyprland config
+- Steam and gaming dependencies (via pacman)
 
-This saves `PERFORMANCE_DRM_DEVICE` (and `PERFORMANCE_VK_DEVICE`) into `~/.gaming-mode.conf`, and performance mode will always use that GPU via `WLR_DRM_DEVICES`.
+## Deferred Features
+
+The following features are planned but not yet implemented:
+
+- Performance mode (dedicated TTY, CPU/GPU optimization)
+- TUI configuration menu
+- Waybar integration
+- Custom resolution/upscaling options
+
+## License
+
+MIT

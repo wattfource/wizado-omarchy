@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# wizado: launch Steam in gamescope (nested mode under Hyprland)
-# With maximum performance optimizations
+# wizado: launch Steam Big Picture Mode with Gamescope
+# Runs nested in Hyprland with proper ultrawide support
+#
+# EXIT: Steam menu → Power → Exit
 
 STATE_DIR="${HOME}/.cache/wizado"
-CONFIG_DIR="${HOME}/.local/share/steam-launcher"
-SESSION_FILE="${STATE_DIR}/session.pid"
-LOG_FILE="${STATE_DIR}/enter-gamesmode.log"
-HARDWARE_CONF="${CONFIG_DIR}/hardware.conf"
+LOG_FILE="${STATE_DIR}/wizado.log"
 
 mkdir -p "$STATE_DIR"
 
@@ -16,202 +15,98 @@ log() {
   echo "[$(date -Is)] $*" >> "$LOG_FILE" 2>/dev/null || true
 }
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "[wizado] Missing required command: $1" >&2
-    exit 1
-  }
+die() {
+  echo "[wizado] ERROR: $1" >&2
+  exit 1
 }
 
-get_display() {
-  # Output: "W H R" (width height refresh)
-  local w=1920 h=1080 r=60
+# Check requirements
+command -v steam >/dev/null 2>&1 || die "Steam not installed"
+command -v gamescope >/dev/null 2>&1 || die "Gamescope not installed (pacman -S gamescope)"
 
-  if command -v hyprctl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    local j
-    j="$(hyprctl monitors -j 2>/dev/null || true)"
-    if [[ -n "$j" ]]; then
-      read -r w h r <<< "$(echo "$j" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    m = d[0] if d else {}
-    w = int(m.get('width', 1920))
-    h = int(m.get('height', 1080))
-    r = int(round(m.get('refreshRate', 60)))
-    print(w, h, r)
-except Exception:
-    print('1920 1080 60')
-")"
-    fi
-  fi
+log "Starting Steam Big Picture with Gamescope"
 
-  echo "$w $h $r"
-}
-
-# Load hardware config from setup, or detect if not available
-load_hardware_config() {
-  HAS_NVIDIA=false
-  HAS_AMD=false
-  HAS_INTEL=false
-  NVIDIA_VK_ID=""
-  
-  if [[ -f "$HARDWARE_CONF" ]]; then
-    source "$HARDWARE_CONF"
-    log "Loaded hardware config: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD INTEL=$HAS_INTEL"
-  else
-    # Fallback: detect NVIDIA GPU
-    if command -v lspci >/dev/null 2>&1; then
-      if lspci | grep -iq nvidia; then
-        HAS_NVIDIA=true
-        NVIDIA_VK_ID=$(lspci -nn | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]')
-      fi
-      if lspci | grep -iqE 'amd|radeon'; then
-        HAS_AMD=true
-      fi
-    fi
-    log "Hardware detected dynamically: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD"
-  fi
-}
-
-# Set NVIDIA GPU to maximum performance mode
-set_nvidia_performance() {
-  $HAS_NVIDIA || return 0
-  
-  # Save current PowerMizer mode for restoration
-  if command -v nvidia-settings >/dev/null 2>&1; then
-    local current_mode
-    current_mode=$(nvidia-settings -q '[gpu:0]/GpuPowerMizerMode' 2>/dev/null | grep -oP 'GpuPowerMizerMode.*: \K[0-9]+' || echo "0")
-    echo "$current_mode" > "${STATE_DIR}/nvidia_powermizer_mode"
-    
-    # Set to Prefer Maximum Performance (mode 1)
-    nvidia-settings -a '[gpu:0]/GpuPowerMizerMode=1' >/dev/null 2>&1 || true
-    log "Set NVIDIA PowerMizer to Performance mode (was: $current_mode)"
-  fi
-  
-  # Enable persistence mode
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi -pm 1 >/dev/null 2>&1 || true
-    log "Enabled NVIDIA persistence mode"
-  fi
-}
-
-# Set AMD GPU to high performance
-set_amd_performance() {
-  $HAS_AMD || return 0
-  
-  for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
-    if [[ -f "$card" ]] && [[ -w "$card" ]]; then
-      local current_level
-      current_level=$(cat "$card" 2>/dev/null || echo "auto")
-      echo "$card:$current_level" >> "${STATE_DIR}/amd_perf_levels"
-      
-      echo "high" > "$card" 2>/dev/null || true
-      log "Set AMD performance level to high (was: $current_level)"
-    fi
-  done
-}
-
-require_cmd steam
-require_cmd gamescope
-require_cmd pgrep
-require_cmd pkill
-
-# Load hardware configuration
-load_hardware_config
-
-# Get display info
-read -r WIDTH HEIGHT REFRESH <<< "$(get_display)"
-
-log "Starting enter-gamesmode"
-log "Display: ${WIDTH}x${HEIGHT}@${REFRESH}Hz"
-log "Hardware: NVIDIA=$HAS_NVIDIA AMD=$HAS_AMD INTEL=$HAS_INTEL"
-
-# Stop hypridle during gaming to prevent screen blanking
-hypridle_was_running="0"
+# Stop hypridle
 if pgrep -x hypridle >/dev/null 2>&1; then
-  hypridle_was_running="1"
   pkill hypridle 2>/dev/null || true
-  log "Stopped hypridle"
+  echo "1" > "${STATE_DIR}/hypridle_was_running"
+else
+  echo "0" > "${STATE_DIR}/hypridle_was_running"
 fi
-echo "$hypridle_was_running" > "${STATE_DIR}/hypridle_was_running"
 
-# If Steam is already running, shut it down cleanly first
+# Shutdown existing Steam
 if pgrep -x steam >/dev/null 2>&1; then
-  log "Steam already running, shutting down..."
-  steam -shutdown >/dev/null 2>&1 || true
-  
-  # Wait for clean shutdown
-  for _ in {1..20}; do
-    pgrep -x steam >/dev/null 2>&1 || break
-    sleep 0.5
-  done
-  
-  # Force kill if still running
-  if pgrep -x steam >/dev/null 2>&1; then
-    pkill -9 -x steam 2>/dev/null || true
-    pkill -9 -x steamwebhelper 2>/dev/null || true
-  fi
+  steam -shutdown 2>/dev/null || true
+  sleep 2
+  pkill -9 steam 2>/dev/null || true
+  pkill -9 steamwebhelper 2>/dev/null || true
 fi
 
-# Clean up any stale gamescope locks
+# Clean stale locks
 rm -f /run/user/"$(id -u)"/gamescope-*.lock 2>/dev/null || true
 
-# Apply GPU performance settings
-rm -f "${STATE_DIR}/nvidia_powermizer_mode" "${STATE_DIR}/amd_perf_levels" 2>/dev/null || true
-set_nvidia_performance
-set_amd_performance
-
-# Build gamescope arguments
-GAMESCOPE_ARGS=(
-  -e                            # Steam integration mode
-  --borderless                  # Borderless window (works better than -f for ultrawides)
-  -w "$WIDTH" -h "$HEIGHT"      # Internal (game render) resolution
-  -W "$WIDTH" -H "$HEIGHT"      # Output (window) resolution  
-  -r "$REFRESH"                 # Refresh rate limit
-  --force-grab-cursor           # Capture cursor in gamescope window
-  --xwayland-count 2            # Extra XWayland server for stability
-)
-
-# Prefer NVIDIA GPU for multi-GPU systems
-if $HAS_NVIDIA && [[ -n "$NVIDIA_VK_ID" ]]; then
-  GAMESCOPE_ARGS+=(--prefer-vk-device "$NVIDIA_VK_ID")
-  log "Using NVIDIA GPU: $NVIDIA_VK_ID"
-fi
-
-# Steam arguments
-STEAM_ARGS="-tenfoot"
-
-# Environment variables for proper integration
-export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
-
-# Force NVIDIA GPU for Vulkan/OpenGL if present
-if $HAS_NVIDIA; then
+# Detect GPU and resolution
+NVIDIA_VK_ID=""
+if lspci 2>/dev/null | grep -iq nvidia; then
+  NVIDIA_VK_ID=$(lspci -nn 2>/dev/null | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]' || true)
   export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
   export __GLX_VENDOR_LIBRARY_NAME=nvidia
-  export __VK_LAYER_NV_optimus=NVIDIA_only
-  log "Set Vulkan/GLX environment for NVIDIA"
+  export WLR_NO_HARDWARE_CURSORS=1
+  export __GL_SHADER_DISK_CACHE=1
+  log "NVIDIA detected: $NVIDIA_VK_ID"
 fi
 
-# Gamemode info
+# Get current resolution
+if command -v wlr-randr >/dev/null 2>&1; then
+  RES=$(wlr-randr 2>/dev/null | grep -oP '\d+x\d+' | head -1 || echo "")
+fi
+RES="${RES:-5120x2160}"
+WIDTH="${RES%x*}"
+HEIGHT="${RES#*x}"
+log "Resolution: ${WIDTH}x${HEIGHT}"
+
+# Gamescope args
+GAMESCOPE_ARGS=(
+  -W "$WIDTH"            # Output width
+  -H "$HEIGHT"           # Output height  
+  -w "$WIDTH"            # Game width
+  -h "$HEIGHT"           # Game height
+  -f                     # Fullscreen
+  -e                     # Steam integration
+  --force-grab-cursor    # Fix mouse capture
+  --expose-wayland       # Native Wayland for supported games
+)
+
+# Add NVIDIA device if detected
+[[ -n "$NVIDIA_VK_ID" ]] && GAMESCOPE_ARGS+=(--prefer-vk-device "$NVIDIA_VK_ID")
+
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+
+# Cleanup on exit
+cleanup() {
+  log "Session ended"
+  if [[ "$(cat "${STATE_DIR}/hypridle_was_running" 2>/dev/null)" == "1" ]]; then
+    hypridle &
+  fi
+}
+trap cleanup EXIT
+
+echo ""
+echo "  ╔═══════════════════════════════════════════╗"
+echo "  ║      WIZADO - STEAM + GAMESCOPE           ║"
+echo "  ║                                           ║"
+echo "  ║  Resolution: ${WIDTH}x${HEIGHT}                   ║"
+echo "  ║  Exit: Steam menu → Power → Exit          ║"
+echo "  ╚═══════════════════════════════════════════╝"
+echo ""
+
+# Launch with GameMode if available
+STEAM_CMD="steam -tenfoot -gamepadui"
+
+log "gamescope ${GAMESCOPE_ARGS[*]} -- $STEAM_CMD"
+
 if command -v gamemoderun >/dev/null 2>&1; then
-  export STEAM_RUNTIME_PREFER_HOST_LIBRARIES=0
-  log "Gamemode available - add 'gamemoderun %command%' to game launch options"
+  gamemoderun gamescope "${GAMESCOPE_ARGS[@]}" -- $STEAM_CMD 2>&1 | tee -a "$LOG_FILE"
+else
+  gamescope "${GAMESCOPE_ARGS[@]}" -- $STEAM_CMD 2>&1 | tee -a "$LOG_FILE"
 fi
-
-# MangoHud integration
-if command -v mangohud >/dev/null 2>&1; then
-  GAMESCOPE_ARGS+=(--mangoapp)
-  log "MangoHud enabled via --mangoapp"
-fi
-
-log "Launching: gamescope ${GAMESCOPE_ARGS[*]} -- steam $STEAM_ARGS"
-
-# Launch gamescope with Steam
-setsid /usr/bin/gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/bin/steam $STEAM_ARGS >> "$LOG_FILE" 2>&1 &
-GAMESCOPE_PID=$!
-
-echo "$GAMESCOPE_PID" > "$SESSION_FILE"
-log "Gamescope started with PID $GAMESCOPE_PID"
-
-exit 0

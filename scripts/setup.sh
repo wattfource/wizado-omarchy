@@ -8,9 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 TARGET_DIR="${HOME}/.local/share/steam-launcher"
-SWITCH_BIN="${TARGET_DIR}/enter-gamesmode"
-SWITCH_TTY_BIN="${TARGET_DIR}/enter-gamesmode-tty"
-RETURN_BIN="${TARGET_DIR}/leave-gamesmode"
+STEAM_BIN="${TARGET_DIR}/enter-gamesmode"
 
 UDEV_RULES_FILE="/etc/udev/rules.d/99-wizado-gaming.rules"
 NVIDIA_XORG_CONF="/etc/X11/xorg.conf.d/20-nvidia-performance.conf"
@@ -40,15 +38,13 @@ HAS_INTEL=false
 NVIDIA_VK_ID=""
 
 rollback_changes() {
-  [[ -f "$SWITCH_BIN" ]] && rm -f "$SWITCH_BIN"
-  [[ -f "$SWITCH_TTY_BIN" ]] && rm -f "$SWITCH_TTY_BIN"
-  [[ -f "$RETURN_BIN" ]] && rm -f "$RETURN_BIN"
+  [[ -f "$STEAM_BIN" ]] && rm -f "$STEAM_BIN"
   if [[ "$CREATED_TARGET_DIR" -eq 1 ]] && [[ -d "$TARGET_DIR" ]]; then
     rmdir "$TARGET_DIR" 2>/dev/null || true
   fi
 
   if [[ "$ADDED_BINDINGS" -eq 1 ]] && [[ -n "$BINDINGS_CONFIG" ]] && [[ -f "$BINDINGS_CONFIG" ]]; then
-    sed -i '/# Gaming Mode bindings - added by wizado/,/# End Gaming Mode bindings/d' "$BINDINGS_CONFIG"
+    sed -i '/# Steam - added by wizado/,/# End Steam bindings/d' "$BINDINGS_CONFIG"
   fi
 }
 
@@ -611,20 +607,13 @@ deploy_launchers() {
 
   local launcher_src="${SCRIPT_DIR}/launchers"
 
-  if [[ ! -f "${launcher_src}/enter-gamesmode" ]] || [[ ! -f "${launcher_src}/leave-gamesmode" ]]; then
-    die "Launcher scripts not found in ${launcher_src}"
+  if [[ ! -f "${launcher_src}/enter-gamesmode" ]]; then
+    die "Launcher script not found: ${launcher_src}/enter-gamesmode"
   fi
 
-  install -Dm755 "${launcher_src}/enter-gamesmode" "$SWITCH_BIN" || die "Failed to install enter-gamesmode"
-  install -Dm755 "${launcher_src}/leave-gamesmode" "$RETURN_BIN" || die "Failed to install leave-gamesmode"
-  
-  # Install TTY mode launcher if available
-  if [[ -f "${launcher_src}/enter-gamesmode-tty" ]]; then
-    install -Dm755 "${launcher_src}/enter-gamesmode-tty" "$SWITCH_TTY_BIN" || warn "Failed to install enter-gamesmode-tty"
-    log "TTY mode launcher installed"
-  fi
+  install -Dm755 "${launcher_src}/enter-gamesmode" "$STEAM_BIN" || die "Failed to install enter-gamesmode"
 
-  log "Launchers installed to $TARGET_DIR"
+  log "Steam launcher installed to $TARGET_DIR"
 }
 
 # ============================================================================
@@ -632,13 +621,11 @@ deploy_launchers() {
 # ============================================================================
 
 configure_shortcuts() {
-  log "Configuring Hyprland keybindings..."
+  log "Configuring Hyprland keybinding..."
 
   # Remove old bindings if they exist (allows re-run to update)
-  if grep -q "# Gaming Mode bindings - added by wizado" "$BINDINGS_CONFIG" 2>/dev/null; then
-    log "Removing old gaming mode bindings..."
-    sed -i '/# Gaming Mode bindings - added by wizado/,/# End Gaming Mode bindings/d' "$BINDINGS_CONFIG"
-  fi
+  sed -i '/# Gaming Mode bindings - added by wizado/,/# End Gaming Mode bindings/d' "$BINDINGS_CONFIG" 2>/dev/null || true
+  sed -i '/# Steam - added by wizado/,/# End Steam bindings/d' "$BINDINGS_CONFIG" 2>/dev/null || true
 
   # Detect bind style
   local bind_style="bindd"
@@ -648,27 +635,24 @@ configure_shortcuts() {
     fi
   fi
 
-  # Add bindings
+  # Add binding
   {
     echo ""
-    echo "# Gaming Mode bindings - added by wizado"
+    echo "# Steam - added by wizado"
+    echo "# Launches Steam on a dedicated VT (Ctrl+Alt+F1 to return)"
     if [[ "$bind_style" == "bindd" ]]; then
-      echo "bindd = SUPER SHIFT, S, Steam Gaming Mode (nested), exec, $SWITCH_BIN"
-      echo "bindd = SUPER SHIFT, G, Steam Gaming Mode (TTY), exec, $SWITCH_TTY_BIN"
-      echo "bindd = SUPER SHIFT, R, Exit Gaming Mode, exec, $RETURN_BIN"
+      echo "bindd = SUPER SHIFT, S, Steam, exec, $STEAM_BIN"
     else
-      echo "bind = SUPER SHIFT, S, exec, $SWITCH_BIN"
-      echo "bind = SUPER SHIFT, G, exec, $SWITCH_TTY_BIN"
-      echo "bind = SUPER SHIFT, R, exec, $RETURN_BIN"
+      echo "bind = SUPER SHIFT, S, exec, $STEAM_BIN"
     fi
-    echo "# End Gaming Mode bindings"
-  } >> "$BINDINGS_CONFIG" || die "Failed to add keybindings"
+    echo "# End Steam bindings"
+  } >> "$BINDINGS_CONFIG" || die "Failed to add keybinding"
 
   ADDED_BINDINGS=1
 
   # Reload Hyprland
   hyprctl reload >/dev/null 2>&1 || warn "Hyprland reload may have failed"
-  log "Keybindings added to $BINDINGS_CONFIG"
+  log "Keybinding added to $BINDINGS_CONFIG"
 }
 
 # ============================================================================
@@ -695,13 +679,11 @@ What this does:
   • Configures TTY switching permissions for dedicated gaming mode
   • Adds Hyprland keybindings
 
-Keybindings after install:
-  Super + Shift + S   Launch Steam in gamescope (nested in Hyprland)
-  Super + Shift + G   Launch Steam in gamescope (dedicated TTY)
-  Super + Shift + R   Exit gaming mode
+Keybinding after install:
+  Super + Shift + S    Launch Steam on dedicated VT
 
-TTY mode runs gamescope directly on a separate virtual terminal without
-Hyprland, providing maximum performance and full VRR/FreeSync support.
+Steam runs on a separate virtual terminal with gamescope as the compositor.
+No Hyprland overhead. Press Ctrl+Alt+F1 to return to your desktop.
 
 Re-run this script after hardware changes to update configuration.
 EOF
@@ -767,13 +749,11 @@ main() {
   $HAS_NVIDIA && echo "    • NVIDIA PowerMizer: Maximum Performance"
   $HAS_AMD && echo "    • AMD performance level: high"
   echo ""
-  echo "  Keybindings:"
-  echo "    Super + Shift + S   Launch Steam in gamescope (nested in Hyprland)"
-  echo "    Super + Shift + G   Launch Steam in gamescope (dedicated TTY)"
-  echo "    Super + Shift + R   Exit gaming mode"
+  echo "  Keybinding:"
+  echo "    Super + Shift + S    Launch Steam on dedicated VT"
   echo ""
-  echo "  TTY mode runs gamescope directly without Hyprland for maximum"
-  echo "  performance and better VRR/FreeSync support."
+  echo "  Steam runs on a separate virtual terminal with gamescope."
+  echo "  No Hyprland overhead. Press Ctrl+Alt+F1 to return to desktop."
   echo ""
   echo "  Launchers: $TARGET_DIR"
   echo "  Config:    $BINDINGS_CONFIG"

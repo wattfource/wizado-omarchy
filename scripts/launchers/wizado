@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wizado: Steam launcher using user configuration
+# Settings are managed with wizado-config
+
+CONFIG_FILE="${HOME}/.config/wizado/config"
+STATE_DIR="${HOME}/.cache/wizado"
+LOG_FILE="${STATE_DIR}/wizado.log"
+
+mkdir -p "$STATE_DIR"
+
+log() { echo "[$(date -Is)] $*" >> "$LOG_FILE" 2>/dev/null || true; }
+
+# Load config (with defaults)
+WIZADO_RESOLUTION=auto
+WIZADO_FSR=off
+WIZADO_FRAMELIMIT=0
+WIZADO_VRR=off
+WIZADO_HDR=off
+WIZADO_MANGOHUD=off
+WIZADO_STEAM_UI=gamepadui
+WIZADO_MODE=tty
+WIZADO_TTY=3
+
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+log "Config: RES=$WIZADO_RESOLUTION FSR=$WIZADO_FSR FPS=$WIZADO_FRAMELIMIT MODE=$WIZADO_MODE"
+
+# Requirements
+command -v steam >/dev/null 2>&1 || { echo "Steam not installed"; exit 1; }
+command -v gamescope >/dev/null 2>&1 || { echo "Gamescope not installed"; exit 1; }
+
+# Detect NVIDIA
+NVIDIA_VK_ID=""
+if lspci 2>/dev/null | grep -iq nvidia; then
+  NVIDIA_VK_ID=$(lspci -nn 2>/dev/null | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]' || true)
+fi
+
+# Get resolution
+if [[ "$WIZADO_RESOLUTION" == "auto" ]]; then
+  RES=$(wlr-randr 2>/dev/null | grep -oP '\d+x\d+' | head -1 || echo "2560x1440")
+else
+  RES="$WIZADO_RESOLUTION"
+fi
+WIDTH="${RES%x*}"
+HEIGHT="${RES#*x}"
+
+# Build gamescope args
+build_gamescope_args() {
+  local args=(-W "$WIDTH" -H "$HEIGHT" -f -e)
+  
+  # FSR upscaling
+  if [[ "$WIZADO_FSR" != "off" ]]; then
+    local scale
+    case "$WIZADO_FSR" in
+      ultra) scale="0.77" ;;
+      quality) scale="0.67" ;;
+      balanced) scale="0.59" ;;
+      performance) scale="0.5" ;;
+    esac
+    local inner_w=$(echo "$WIDTH * $scale" | bc | cut -d. -f1)
+    local inner_h=$(echo "$HEIGHT * $scale" | bc | cut -d. -f1)
+    args+=(-w "$inner_w" -h "$inner_h" --filter fsr)
+  else
+    args+=(-w "$WIDTH" -h "$HEIGHT")
+  fi
+  
+  # Frame limit
+  [[ "$WIZADO_FRAMELIMIT" != "0" ]] && args+=(--framerate-limit "$WIZADO_FRAMELIMIT")
+  
+  # VRR
+  [[ "$WIZADO_VRR" == "on" ]] && args+=(--adaptive-sync)
+  
+  # HDR / Color management
+  [[ "$WIZADO_HDR" == "off" ]] && args+=(--disable-color-management)
+  [[ "$WIZADO_HDR" == "on" ]] && args+=(--hdr-enabled)
+  
+  # NVIDIA device
+  [[ -n "$NVIDIA_VK_ID" ]] && args+=(--prefer-vk-device "$NVIDIA_VK_ID")
+  
+  echo "${args[@]}"
+}
+
+# Build environment
+build_env() {
+  [[ "$WIZADO_MANGOHUD" == "on" ]] && export MANGOHUD=1 || export MANGOHUD=0
+  export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+  
+  if [[ -n "$NVIDIA_VK_ID" ]]; then
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    export __GL_SHADER_DISK_CACHE=1
+    export WLR_NO_HARDWARE_CURSORS=1
+    export XCURSOR_SIZE=24
+  fi
+}
+
+# Nested mode (inside Hyprland)
+launch_nested() {
+  [[ -z "${WAYLAND_DISPLAY:-}" ]] && { echo "Must run from Hyprland for nested mode"; exit 1; }
+  
+  # Stop hypridle
+  if pgrep -x hypridle >/dev/null 2>&1; then
+    pkill hypridle 2>/dev/null || true
+    echo "1" > "${STATE_DIR}/hypridle_was_running"
+  else
+    echo "0" > "${STATE_DIR}/hypridle_was_running"
+  fi
+  
+  pkill -9 steam 2>/dev/null || true
+  build_env
+  
+  local gs_args=$(build_gamescope_args)
+  log "Nested launch: gamescope $gs_args -- steam -${WIZADO_STEAM_UI}"
+  
+  trap 'pgrep -x hypridle || [[ "$(cat "${STATE_DIR}/hypridle_was_running" 2>/dev/null)" != "1" ]] || hypridle &' EXIT
+  
+  gamescope $gs_args -- steam -${WIZADO_STEAM_UI} 2>&1 | tee -a "$LOG_FILE"
+}
+
+# TTY mode (exit Hyprland, run on dedicated VT)
+launch_tty() {
+  [[ -z "${WAYLAND_DISPLAY:-}" ]] && { echo "Must run from Hyprland"; exit 1; }
+  
+  pkill -9 steam 2>/dev/null || true
+  
+  # Create TTY launch script
+  local gs_args=$(build_gamescope_args)
+  
+  cat > "${STATE_DIR}/deck-session.sh" << SESSIONEOF
+#!/usr/bin/env bash
+while pgrep -x Hyprland >/dev/null 2>&1; do sleep 0.2; done
+sleep 0.5
+
+export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+$([[ "$WIZADO_MANGOHUD" == "on" ]] && echo "export MANGOHUD=1" || echo "export MANGOHUD=0")
+$([[ -n "$NVIDIA_VK_ID" ]] && cat << NVEOF
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __GL_SHADER_DISK_CACHE=1
+export WLR_NO_HARDWARE_CURSORS=1
+export XCURSOR_SIZE=24
+NVEOF
+)
+
+clear
+echo ""
+echo "  WIZADO - Steam Gaming Session"
+echo "  Resolution: ${WIDTH}x${HEIGHT}"
+echo "  FSR: ${WIZADO_FSR} | FPS Limit: ${WIZADO_FRAMELIMIT}"
+echo ""
+
+gamescope ${gs_args} -- steam -${WIZADO_STEAM_UI} 2>&1 | tee -a "$LOG_FILE"
+
+exec Hyprland
+SESSIONEOF
+
+  chmod +x "${STATE_DIR}/deck-session.sh"
+  
+  log "TTY launch: gamescope $gs_args -- steam -${WIZADO_STEAM_UI}"
+  
+  echo ""
+  echo "  Entering Steam Gaming Mode..."
+  echo ""
+  
+  setsid "${STATE_DIR}/deck-session.sh" </dev/null &>/dev/null &
+  sleep 0.3
+  hyprctl dispatch exit
+}
+
+# Main
+case "$WIZADO_MODE" in
+  nested) launch_nested ;;
+  tty) launch_tty ;;
+  *) echo "Unknown mode: $WIZADO_MODE"; exit 1 ;;
+esac
+

@@ -375,6 +375,7 @@ check_steam_dependencies() {
     "ttf-liberation"
     "xdg-user-dirs"
     "pciutils"
+    "curl"
   )
 
   # GPU-specific drivers
@@ -467,7 +468,8 @@ install_recommended_packages() {
     "mangohud"
     "lib32-mangohud"
     "libcap"
-    "python"
+    "gum"
+    "jq"
   )
 
   local -a missing=()

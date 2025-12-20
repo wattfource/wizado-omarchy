@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wizado-tty: Launch Steam directly on a TTY (uses wizado config)
+
+CONFIG_FILE="${HOME}/.config/wizado/config"
+LOG_FILE="${HOME}/.cache/wizado/wizado-tty.log"
+mkdir -p "${HOME}/.cache/wizado"
+
+log() { echo "[$(date -Is)] $*" >> "$LOG_FILE" 2>/dev/null || true; }
+
+# Load config (with defaults)
+WIZADO_RESOLUTION=auto
+WIZADO_FSR=off
+WIZADO_FRAMELIMIT=0
+WIZADO_VRR=off
+WIZADO_HDR=off
+WIZADO_MANGOHUD=off
+WIZADO_STEAM_UI=gamepadui
+
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+log "Starting wizado-tty: FSR=$WIZADO_FSR FPS=$WIZADO_FRAMELIMIT UI=$WIZADO_STEAM_UI"
+
+# Detect NVIDIA
+NVIDIA_VK_ID=""
+if lspci 2>/dev/null | grep -iq nvidia; then
+  NVIDIA_VK_ID=$(lspci -nn 2>/dev/null | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]' || true)
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  export __GL_SHADER_DISK_CACHE=1
+  export WLR_NO_HARDWARE_CURSORS=1
+  export XCURSOR_SIZE=24
+fi
+
+# Environment
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+[[ "$WIZADO_MANGOHUD" == "on" ]] && export MANGOHUD=1 || export MANGOHUD=0
+
+# Resolution
+if [[ "$WIZADO_RESOLUTION" == "auto" ]]; then
+  WIDTH=2560
+  HEIGHT=1440
+else
+  WIDTH="${WIZADO_RESOLUTION%x*}"
+  HEIGHT="${WIZADO_RESOLUTION#*x}"
+fi
+
+# Build gamescope args
+ARGS=(-W "$WIDTH" -H "$HEIGHT" -f -e)
+
+# FSR
+if [[ "$WIZADO_FSR" != "off" ]]; then
+  case "$WIZADO_FSR" in
+    ultra) scale="0.77" ;;
+    quality) scale="0.67" ;;
+    balanced) scale="0.59" ;;
+    performance) scale="0.5" ;;
+  esac
+  inner_w=$(echo "$WIDTH * $scale" | bc | cut -d. -f1)
+  inner_h=$(echo "$HEIGHT * $scale" | bc | cut -d. -f1)
+  ARGS+=(-w "$inner_w" -h "$inner_h" --filter fsr)
+else
+  ARGS+=(-w "$WIDTH" -h "$HEIGHT")
+fi
+
+# Frame limit
+[[ "$WIZADO_FRAMELIMIT" != "0" ]] && ARGS+=(--framerate-limit "$WIZADO_FRAMELIMIT")
+
+# VRR
+[[ "$WIZADO_VRR" == "on" ]] && ARGS+=(--adaptive-sync)
+
+# HDR
+[[ "$WIZADO_HDR" == "off" ]] && ARGS+=(--disable-color-management)
+[[ "$WIZADO_HDR" == "on" ]] && ARGS+=(--hdr-enabled)
+
+# NVIDIA
+[[ -n "$NVIDIA_VK_ID" ]] && ARGS+=(--prefer-vk-device "$NVIDIA_VK_ID")
+
+clear
+echo ""
+echo "  ╔═══════════════════════════════════════════════════════════╗"
+echo "  ║              WIZADO - STEAM GAMING SESSION                ║"
+echo "  ╠═══════════════════════════════════════════════════════════╣"
+echo "  ║  Resolution: ${WIDTH}x${HEIGHT}                               ║"
+echo "  ║  FSR: ${WIZADO_FSR}  |  FPS Limit: ${WIZADO_FRAMELIMIT}                          ║"
+echo "  ╠═══════════════════════════════════════════════════════════╣"
+echo "  ║  Exit Steam to restart  |  Ctrl+Alt+F1 for desktop        ║"
+echo "  ╚═══════════════════════════════════════════════════════════╝"
+echo ""
+sleep 1
+
+log "Launching: gamescope ${ARGS[*]} -- steam -${WIZADO_STEAM_UI}"
+
+gamescope "${ARGS[@]}" -- steam -${WIZADO_STEAM_UI} 2>&1 | tee -a "$LOG_FILE"
+
+log "Steam exited"
+echo ""
+echo "Steam exited. Press Enter to restart, or Ctrl+Alt+F1 for desktop."
+read -r
+exec "$0"

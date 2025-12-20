@@ -5,7 +5,7 @@ pkgdesc="Steam gaming mode for Hyprland (Omarchy)"
 arch=('any')
 url="https://github.com/REPLACE_ME/wizado"
 license=('MIT')
-depends=('bash' 'python')
+depends=('bash' 'curl' 'gum' 'jq')
 optdepends=(
   'steam: Steam client'
   'gamescope: Gaming compositor'

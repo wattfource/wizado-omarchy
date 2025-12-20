@@ -12,7 +12,15 @@ post_install() {
   echo ""
   echo "  Keybindings (after setup):"
   echo "    Super + Shift + S   Launch Steam in gamescope"
-  echo "    Super + Shift + R   Exit gaming mode"
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  LICENSE REQUIRED"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "  Wizado requires a valid license to run."
+  echo ""
+  echo "  On first launch, you will be prompted to enter your license key."
+  echo "  If you don't have a license, visit: https://wizado.app"
   echo ""
 }
 
@@ -26,4 +34,7 @@ pre_remove() {
     echo "Running wizado remove..."
     wizado remove --yes 2>/dev/null || true
   fi
+  
+  # Clean up license file (optional - user may want to keep it)
+  # rm -f "${HOME}/.config/wizado/license.json" 2>/dev/null || true
 }

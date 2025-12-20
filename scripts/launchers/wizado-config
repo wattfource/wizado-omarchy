@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wizado-config: TUI for configuring Steam/Gamescope settings
+
+CONFIG_DIR="${HOME}/.config/wizado"
+CONFIG_FILE="${CONFIG_DIR}/config"
+DEFAULT_CONFIG="/usr/share/wizado/default.conf"
+
+# Ensure config exists
+mkdir -p "$CONFIG_DIR"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  if [[ -f "$DEFAULT_CONFIG" ]]; then
+    cp "$DEFAULT_CONFIG" "$CONFIG_FILE"
+  else
+    cat > "$CONFIG_FILE" << 'EOF'
+WIZADO_RESOLUTION=auto
+WIZADO_FSR=off
+WIZADO_FRAMELIMIT=0
+WIZADO_VRR=off
+WIZADO_HDR=off
+WIZADO_MANGOHUD=off
+WIZADO_STEAM_UI=gamepadui
+WIZADO_MODE=tty
+WIZADO_TTY=3
+EOF
+  fi
+fi
+
+# Load current config
+source "$CONFIG_FILE"
+
+# Check for gum (modern TUI)
+if ! command -v gum >/dev/null 2>&1; then
+  echo "Installing gum for TUI..."
+  sudo pacman -S --noconfirm gum 2>/dev/null || {
+    echo "Please install gum: sudo pacman -S gum"
+    exit 1
+  }
+fi
+
+save_config() {
+  cat > "$CONFIG_FILE" << EOF
+WIZADO_RESOLUTION=${WIZADO_RESOLUTION}
+WIZADO_FSR=${WIZADO_FSR}
+WIZADO_FRAMELIMIT=${WIZADO_FRAMELIMIT}
+WIZADO_VRR=${WIZADO_VRR}
+WIZADO_HDR=${WIZADO_HDR}
+WIZADO_MANGOHUD=${WIZADO_MANGOHUD}
+WIZADO_STEAM_UI=${WIZADO_STEAM_UI}
+WIZADO_MODE=${WIZADO_MODE}
+WIZADO_TTY=${WIZADO_TTY}
+EOF
+  echo "Configuration saved!"
+}
+
+show_menu() {
+  clear
+  echo ""
+  gum style --border normal --padding "1 2" --border-foreground 212 \
+    "WIZADO CONFIGURATION" "" \
+    "Configure Steam & Gamescope settings"
+  echo ""
+  
+  choice=$(gum choose \
+    "Resolution:     ${WIZADO_RESOLUTION}" \
+    "FSR Upscaling:  ${WIZADO_FSR}" \
+    "Frame Limit:    ${WIZADO_FRAMELIMIT}" \
+    "VRR/Adaptive:   ${WIZADO_VRR}" \
+    "HDR:            ${WIZADO_HDR}" \
+    "MangoHud:       ${WIZADO_MANGOHUD}" \
+    "Steam UI:       ${WIZADO_STEAM_UI}" \
+    "Launch Mode:    ${WIZADO_MODE}" \
+    "Gaming TTY:     ${WIZADO_TTY}" \
+    "---" \
+    "Launch Steam" \
+    "Save & Exit" \
+    "Exit without saving")
+  
+  case "$choice" in
+    "Resolution:"*)
+      WIZADO_RESOLUTION=$(gum input --placeholder "auto or WxH (e.g. 2560x1440)" --value "$WIZADO_RESOLUTION")
+      ;;
+    "FSR Upscaling:"*)
+      WIZADO_FSR=$(gum choose --selected="$WIZADO_FSR" "off" "quality" "balanced" "performance" "ultra")
+      ;;
+    "Frame Limit:"*)
+      WIZADO_FRAMELIMIT=$(gum choose --selected="$WIZADO_FRAMELIMIT" "0" "30" "60" "90" "120" "144" "165" "240")
+      ;;
+    "VRR/Adaptive:"*)
+      WIZADO_VRR=$(gum choose --selected="$WIZADO_VRR" "off" "on")
+      ;;
+    "HDR:"*)
+      WIZADO_HDR=$(gum choose --selected="$WIZADO_HDR" "off" "on")
+      ;;
+    "MangoHud:"*)
+      WIZADO_MANGOHUD=$(gum choose --selected="$WIZADO_MANGOHUD" "off" "on")
+      ;;
+    "Steam UI:"*)
+      WIZADO_STEAM_UI=$(gum choose --selected="$WIZADO_STEAM_UI" "gamepadui" "tenfoot")
+      ;;
+    "Launch Mode:"*)
+      WIZADO_MODE=$(gum choose --selected="$WIZADO_MODE" "tty" "nested")
+      ;;
+    "Gaming TTY:"*)
+      WIZADO_TTY=$(gum choose --selected="$WIZADO_TTY" "3" "4" "5" "6")
+      ;;
+    "Launch Steam")
+      save_config
+      exec wizado
+      ;;
+    "Save & Exit")
+      save_config
+      exit 0
+      ;;
+    "Exit without saving")
+      exit 0
+      ;;
+    *)
+      ;;
+  esac
+}
+
+# Main loop
+while true; do
+  show_menu
+done
+

@@ -1,28 +1,42 @@
 # Wizado
 
-Steam gaming mode for Hyprland on Arch Linux (Omarchy).
+Steam gaming launcher for Hyprland on Arch Linux (Omarchy).
 
-Launches Steam in a gamescope session with simple keybindings.
+Launches Steam in a fullscreen gamescope session on a dedicated workspace.
+
+## How It Works
+
+When you press `Super + Shift + S`:
+1. Finds an empty workspace (or uses workspace 10)
+2. Switches to that workspace
+3. Launches gamescope + Steam in fullscreen
+4. When you exit Steam, returns to your original workspace
+
+All while Hyprland keeps running. Simple, reliable, works with NVIDIA.
 
 ## Features
 
-- Launch Steam (Deck UI) in gamescope with `Super + Shift + S`
-- Exit gaming mode with `Super + Shift + R`
-- Auto-detects display resolution and refresh rate
-- Suspends hypridle during gaming to prevent screen blanking
-- MangoHud integration (if installed)
-- Gamemode support for individual games
+- One-key launch with `Super + Shift + S`
+- Force-quit with `Super + Shift + Q`
+- TUI configuration via `wizado-config`
+- Auto-detects display resolution
+- Launches on empty workspace
+- Returns to original workspace on exit
+- Suspends hypridle during gaming
+- FSR upscaling support
+- Frame rate limiting
+- VRR/Adaptive Sync
+- NVIDIA GPU auto-detection
 
 ## Requirements
 
-- Arch Linux with Omarchy
-- Hyprland
+- Arch Linux with Hyprland
 - Steam
 - gamescope
+- gum (for TUI config)
+- bc (for FSR calculations)
 
 ## Installation
-
-### From Source
 
 ```bash
 git clone https://github.com/REPLACE_ME/wizado.git
@@ -30,83 +44,124 @@ cd wizado
 ./scripts/setup.sh
 ```
 
-### As Arch Package
-
-```bash
-makepkg -si
-wizado setup
-```
-
 ## Usage
 
-After installation:
+| Command | Action |
+|---------|--------|
+| `wizado` | Launch Steam |
+| `wizado-config` | Configure settings via TUI |
+| `Super + Shift + S` | Launch Steam (keybind) |
+| `Super + Shift + Q` | Force-quit Steam + gamescope |
 
-| Keybinding | Action |
-|------------|--------|
-| `Super + Shift + S` | Launch Steam in gamescope |
-| `Super + Shift + R` | Exit gaming mode |
+### Configuration
 
-### Using Gamemode with Games
-
-Gamemode optimizes your system while gaming (CPU governor, I/O priority, etc.). 
-To enable it for a specific game:
-
-1. Right-click the game in Steam → Properties
-2. In "Launch Options", add:
-   ```
-   gamemoderun %command%
-   ```
-
-### MangoHud Performance Overlay
-
-If MangoHud is installed, it's automatically available via gamescope's `--mangoapp` integration.
-Press `Super + F1` in-game to toggle the overlay (or configure via MangoHud settings).
-
-## Uninstall
+Settings stored in `~/.config/wizado/config`:
 
 ```bash
-wizado remove
+WIZADO_RESOLUTION=auto    # auto, 1920x1080, 2560x1440, etc.
+WIZADO_FSR=off            # off, ultra, quality, balanced, performance
+WIZADO_FRAMELIMIT=0       # 0 = unlimited, or FPS cap (60, 120, etc.)
+WIZADO_VRR=off            # on/off - Variable Refresh Rate
+WIZADO_MANGOHUD=off       # on/off - Performance overlay
+WIZADO_STEAM_UI=tenfoot   # tenfoot (Big Picture) or gamepadui (Steam Deck UI)
+WIZADO_WORKSPACE=10       # Preferred workspace (1-10)
 ```
 
-Or if installed from source:
+## Why Nested Mode?
+
+After extensive testing, running gamescope nested inside Hyprland is the only reliable method for NVIDIA GPUs. The performance difference vs "true" Deck mode is negligible (1-5%).
+
+**Nested mode benefits:**
+- Stable, no visual glitches
+- Easy to exit (just close Steam)
+- Switch workspaces normally with Ctrl+Alt+arrows
+- Full gamescope features (cursor lock, FSR, frame limiting)
+- Works reliably with NVIDIA
+
+---
+
+## What Doesn't Work (Failure History)
+
+### ❌ TTY3 Mode with NVIDIA (Visual Glitches)
+
+**Goal:** Run gamescope directly on TTY3 (like Steam Deck) for zero compositor overhead.
+
+**Results:**
+- **Severe flickering** - Screen flickers constantly while Steam is running
+- **Color corruption** - Colors become distorted, oversaturated
+- **HDR state leak** - After returning to Hyprland, colors remain corrupted
+- **Mouse glitches** - Visual artifacts follow cursor movement
+
+**Cause:** NVIDIA's proprietary driver has poor support for VT switching when gamescope uses its DRM backend.
+
+### ❌ Direct DRM Gamescope (Seat Conflicts)
+
+```bash
+gamescope --backend drm -- steam -gamepadui
+# → "Could not take control of session: Device or resource busy"
+```
+
+Hyprland owns the DRM master and logind seat. Only one compositor can control the GPU at a time.
+
+### ❌ Steam Without Gamescope (Ultrawide Issues)
+
+Running `steam -gamepadui` directly works, but:
+- Mouse constrained to wrong area on ultrawide monitors
+- Games render fullscreen but input only works in 16:9/4:3 region
+
+Gamescope fixes this by handling ultrawide scaling.
+
+---
+
+## Technical Notes
+
+### Gamescope Flags Used
+
+```bash
+-W/-H                      # Output resolution (your monitor)
+-w/-h                      # Render resolution (for FSR)
+-f                         # Fullscreen
+-e                         # Steam integration
+--force-windows-fullscreen # Better game compatibility
+--disable-color-management # CRITICAL for NVIDIA - prevents HDR leaking
+--prefer-vk-device XXXX:YYYY  # Force specific GPU
+```
+
+### NVIDIA Environment Variables
+
+```bash
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+__GLX_VENDOR_LIBRARY_NAME=nvidia
+__GL_SHADER_DISK_CACHE=1
+WLR_NO_HARDWARE_CURSORS=1
+XCURSOR_SIZE=24
+```
+
+### Using Gamemode with Individual Games
+
+Gamemode (Feral Interactive) optimizes CPU/GPU while gaming. Enable per-game:
+
+1. Right-click game in Steam → Properties
+2. Launch Options: `gamemoderun %command%`
+
+Don't wrap gamescope with gamemoderun—it should optimize the game, not the compositor.
+
+## Uninstall
 
 ```bash
 ./scripts/remove.sh
 ```
 
-## What Gets Installed
+## Glossary
 
-- Launcher scripts in `~/.local/share/steam-launcher/`
-- Keybindings added to your Hyprland config
-- Steam and gaming dependencies (via pacman):
-  - `gamescope` - Micro-compositor for games
-  - `gamemode` + `lib32-gamemode` - System optimization daemon
-  - `mangohud` + `lib32-mangohud` - Performance overlay
-
-## Technical Details
-
-### How it Works
-
-1. **Gamescope** runs as a nested Wayland compositor inside Hyprland
-2. **Steam** launches in Deck UI mode (`-steamdeck`) for optimal gamescope integration
-3. **Games** run inside gamescope with proper frame pacing and VSync handling
-4. **Gamemode** can be enabled per-game via Steam launch options
-
-### Why Not `gamemoderun gamescope`?
-
-Gamemode should optimize the **game process**, not the compositor. Running 
-`gamemoderun gamescope` would apply optimizations to gamescope itself, which 
-doesn't help game performance. Instead, use `gamemoderun %command%` in each 
-game's launch options.
-
-## Deferred Features
-
-The following features are planned but not yet implemented:
-
-- Performance mode (dedicated TTY, CPU/GPU optimization)
-- TUI configuration menu
-- Waybar integration
-- Custom resolution/upscaling options
+See [GLOSSARY.md](GLOSSARY.md) for detailed explanations of technical terms:
+- Compositor, Wayland, X11, XWayland
+- DRM, KMS, DRM Master
+- Seat, logind, seatd, Session
+- TTY/VT, getty
+- Gamescope, FSR, Proton, DXVK, Vulkan
+- NVIDIA-specific settings and workarounds
+- Environment variables reference
 
 ## License
 

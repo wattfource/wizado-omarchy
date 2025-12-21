@@ -8,11 +8,11 @@ CONFIG_DIR="${HOME}/.config/wizado"
 CONFIG_FILE="${CONFIG_DIR}/config"
 DEFAULT_CONFIG="/usr/share/wizado/default.conf"
 
-# Source license functions
+# Source license functions (user local takes precedence over system)
 for lib_path in \
+    "${HOME}/.local/share/wizado/scripts/lib" \
     "${SCRIPT_DIR}/../lib" \
-    "/usr/share/wizado/scripts/lib" \
-    "${HOME}/.local/share/wizado/scripts/lib"; do
+    "/usr/share/wizado/scripts/lib"; do
   if [[ -f "${lib_path}/license.sh" ]]; then
     source "${lib_path}/license.sh"
     source "${lib_path}/license-tui.sh"

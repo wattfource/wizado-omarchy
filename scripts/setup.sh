@@ -370,78 +370,80 @@ configure_shortcuts() {
 configure_waybar() {
   log "Configuring Waybar module..."
 
-  local waybar_config="${HOME}/.config/waybar/config"
-  local waybar_style="${HOME}/.config/waybar/style.css"
+  local waybar_dir="${HOME}/.config/waybar"
+  local waybar_config=""
+  local waybar_style="${waybar_dir}/style.css"
   local wizado_style_src="${SCRIPT_DIR}/config/waybar-style.css"
 
+  # Find waybar config (could be config or config.jsonc)
+  if [[ -f "${waybar_dir}/config.jsonc" ]]; then
+    waybar_config="${waybar_dir}/config.jsonc"
+  elif [[ -f "${waybar_dir}/config" ]]; then
+    waybar_config="${waybar_dir}/config"
+  fi
+
   # Check if waybar config exists
-  if [[ ! -f "$waybar_config" ]]; then
-    warn "Waybar config not found at $waybar_config"
+  if [[ -z "$waybar_config" || ! -f "$waybar_config" ]]; then
+    warn "Waybar config not found at ${waybar_dir}"
     warn "Skipping waybar configuration. You can manually add the wizado module later."
     return 0
   fi
 
+  log "  Using waybar config: $waybar_config"
+
   # Backup waybar config
-  cp "$waybar_config" "${waybar_config}.wizado-backup.$(date +%Y%m%d%H%M%S)"
+  cp "$waybar_config" "${waybar_config}.bak.wizado.$(date +%Y%m%d%H%M%S)"
   log "  Backed up waybar config"
 
   # Check if wizado module already exists
   if grep -q '"custom/wizado"' "$waybar_config" 2>/dev/null; then
     log "  Wizado module already exists in waybar config"
   else
-    # Add custom/wizado to modules-right if it exists
-    if grep -q '"modules-right"' "$waybar_config" 2>/dev/null; then
-      # Insert wizado module into modules-right array
-      # Try to add it before the last item in modules-right for proper positioning
-      if grep -q '"modules-right".*\[' "$waybar_config"; then
-        # Find the modules-right line and add custom/wizado
-        sed -i 's/"modules-right"\s*:\s*\[/"modules-right": ["custom\/wizado", /' "$waybar_config" 2>/dev/null || true
-        log "  Added custom/wizado to modules-right"
-      fi
-    fi
-
-    # Add the module definition if not present
-    if ! grep -q '"custom/wizado"' "$waybar_config" 2>/dev/null; then
-      # Find a good place to insert the module definition
-      # Try to add it before the closing brace of the config
-      local module_def
-      module_def=$(cat <<'MODULEDEF'
-
-  "custom/wizado": {
-    "format": "{}",
-    "return-type": "json",
-    "exec": "wizado-waybar",
-    "on-click": "wizado-launch",
-    "on-click-right": "wizado-config",
-    "interval": 60,
-    "tooltip": true
-  },
-MODULEDEF
-)
-      # Insert before the last closing brace
-      # This is a bit tricky with JSON, so we'll append and let waybar handle it
-      # A safer approach is to check if it's valid JSON and use jq if available
-      if command -v jq >/dev/null 2>&1; then
-        local tmp_config
-        tmp_config=$(mktemp)
-        if jq '. + {"custom/wizado": {"format": "{}", "return-type": "json", "exec": "wizado-waybar", "on-click": "wizado-launch", "on-click-right": "wizado-config", "interval": 60, "tooltip": true}}' "$waybar_config" > "$tmp_config" 2>/dev/null; then
-          mv "$tmp_config" "$waybar_config"
-          log "  Added wizado module definition (via jq)"
-        else
-          rm -f "$tmp_config"
-          warn "  Could not add module definition automatically"
-          warn "  Please add the following to your waybar config manually:"
-          echo ""
-          cat "${SCRIPT_DIR}/config/waybar-module.jsonc"
-          echo ""
-        fi
+    # Use jq to safely modify the config
+    if command -v jq >/dev/null 2>&1; then
+      local tmp_config
+      tmp_config=$(mktemp)
+      
+      # Strip comments (for jsonc files) and process with jq
+      if sed 's|//.*||g' "$waybar_config" | jq '
+        # Add custom/wizado to modules-right if it exists
+        if .["modules-right"] then
+          .["modules-right"] = ["custom/wizado"] + .["modules-right"]
+        else . end |
+        # Add the module definition
+        . + {
+          "custom/wizado": {
+            "format": "{}",
+            "return-type": "json",
+            "exec": "wizado-waybar",
+            "on-click": "wizado-launch",
+            "on-click-right": "wizado-config",
+            "interval": 60,
+            "tooltip": true
+          }
+        }
+      ' > "$tmp_config" 2>/dev/null && [[ -s "$tmp_config" ]]; then
+        mv "$tmp_config" "$waybar_config"
+        log "  Added wizado module to waybar config"
       else
-        warn "  jq not found - cannot safely modify waybar config"
+        rm -f "$tmp_config"
+        # Fallback: try simple sed insertion
+        if grep -q '"modules-right"' "$waybar_config" 2>/dev/null; then
+          sed -i 's/"modules-right"[[:space:]]*:[[:space:]]*\[/"modules-right": ["custom\/wizado", /' "$waybar_config" 2>/dev/null || true
+          log "  Added custom/wizado to modules-right (via sed)"
+        fi
+        warn "  Could not add full module definition automatically"
         warn "  Please add the following to your waybar config manually:"
         echo ""
         cat "${SCRIPT_DIR}/config/waybar-module.jsonc"
         echo ""
       fi
+    else
+      warn "  jq not found - cannot safely modify waybar config"
+      warn "  Please add the following to your waybar config manually:"
+      echo ""
+      cat "${SCRIPT_DIR}/config/waybar-module.jsonc"
+      echo ""
     fi
   fi
 

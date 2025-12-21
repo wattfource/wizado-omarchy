@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# wizado-config: TUI for configuring Steam/Gamescope settings
+# wizado-config: TUI for configuring Steam/Gamescope settings and license management
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${HOME}/.config/wizado"
 CONFIG_FILE="${CONFIG_DIR}/config"
 DEFAULT_CONFIG="/usr/share/wizado/default.conf"
+
+# Source license functions
+for lib_path in \
+    "${SCRIPT_DIR}/../lib" \
+    "/usr/share/wizado/scripts/lib" \
+    "${HOME}/.local/share/wizado/scripts/lib"; do
+  if [[ -f "${lib_path}/license.sh" ]]; then
+    source "${lib_path}/license.sh"
+    source "${lib_path}/license-tui.sh"
+    break
+  fi
+done
 
 # Ensure config exists
 mkdir -p "$CONFIG_DIR"
@@ -55,12 +68,193 @@ WIZADO_MANGOHUD=${WIZADO_MANGOHUD}
 WIZADO_STEAM_UI=${WIZADO_STEAM_UI}
 WIZADO_WORKSPACE=${WIZADO_WORKSPACE}
 EOF
-  echo "Configuration saved!"
+  gum style --foreground 82 "Configuration saved!"
+  sleep 1
+}
+
+# Get license status display string
+get_license_status_display() {
+  check_license 2>/dev/null
+  local result=$?
+  
+  case "${LICENSE_STATUS:-unknown}" in
+    "valid")
+      echo "✓ Licensed"
+      ;;
+    "offline_grace")
+      echo "✓ Licensed (offline)"
+      ;;
+    "no_license")
+      echo "✗ Not licensed"
+      ;;
+    "invalid")
+      echo "✗ Invalid license"
+      ;;
+    "expired")
+      echo "✗ License expired"
+      ;;
+    "machine_mismatch")
+      echo "⚠ Wrong machine"
+      ;;
+    "offline_expired")
+      echo "✗ Offline expired"
+      ;;
+    *)
+      echo "? Unknown"
+      ;;
+  esac
+}
+
+# Show license management menu
+show_license_menu() {
+  while true; do
+    clear
+    echo ""
+    gum style --border normal --padding "1 2" --border-foreground 39 \
+      "LICENSE MANAGEMENT" "" \
+      "Wizado License Settings"
+    echo ""
+    
+    # Get current license status
+    local status_display
+    status_display=$(get_license_status_display)
+    local stored_license
+    stored_license=$(get_stored_license 2>/dev/null || echo "")
+    
+    # Show current status
+    gum style --foreground 250 "Current Status: $status_display"
+    if [[ -n "$stored_license" ]]; then
+      # Show masked license key
+      local masked="${stored_license:0:4}****${stored_license: -4}"
+      gum style --foreground 245 "License Key: $masked"
+    fi
+    echo ""
+    
+    local choice
+    choice=$(gum choose \
+      "Enter License Key" \
+      "View License Status" \
+      "Get a License (\$5 for 5 machines)" \
+      "Clear License" \
+      "─────────────────────────" \
+      "← Back to Settings")
+    
+    case "$choice" in
+      "Enter License Key")
+        enter_license_key
+        ;;
+      "View License Status")
+        view_license_status
+        ;;
+      "Get a License"*)
+        show_purchase_url
+        echo ""
+        gum input --placeholder "Press Enter to continue..."
+        ;;
+      "Clear License")
+        clear_license_prompt
+        ;;
+      "← Back to Settings"|"─────────────────────────")
+        return
+        ;;
+    esac
+  done
+}
+
+# Enter a new license key
+enter_license_key() {
+  echo ""
+  local license_key
+  license_key=$(gum input \
+    --placeholder "XXXX-XXXX-XXXX-XXXX" \
+    --header "Enter your license key:" \
+    --width 40 \
+    --char-limit 50)
+  
+  if [[ -z "$license_key" ]]; then
+    gum style --foreground 214 "No license key entered."
+    sleep 1
+    return
+  fi
+  
+  # Try to activate the license
+  echo ""
+  gum spin --spinner dot --title "Activating license..." -- sleep 1
+  
+  if activate_license "$license_key"; then
+    show_activation_success "$ACTIVATION_EMAIL" "$SLOTS_USED" "$SLOTS_TOTAL"
+  else
+    show_activation_failure "$ACTIVATION_MESSAGE"
+    sleep 2
+  fi
+}
+
+# View detailed license status
+view_license_status() {
+  clear
+  echo ""
+  gum style --border normal --padding "1 2" --border-foreground 39 \
+    "LICENSE STATUS"
+  echo ""
+  
+  check_license 2>/dev/null
+  
+  local stored_license stored_machine_id current_machine_id
+  stored_license=$(get_stored_license 2>/dev/null || echo "")
+  stored_machine_id=$(get_stored_machine_id 2>/dev/null || echo "")
+  current_machine_id=$(generate_machine_id 2>/dev/null || echo "")
+  
+  if [[ -n "$stored_license" ]]; then
+    local masked="${stored_license:0:4}****${stored_license: -4}"
+    gum style --foreground 250 "License Key: $masked"
+  else
+    gum style --foreground 245 "License Key: None stored"
+  fi
+  
+  echo ""
+  gum style --foreground 250 "Status: ${LICENSE_STATUS:-unknown}"
+  
+  if [[ -n "$stored_machine_id" ]]; then
+    echo ""
+    if [[ "$stored_machine_id" == "$current_machine_id" ]]; then
+      gum style --foreground 82 "Machine ID: ✓ Matches"
+    else
+      gum style --foreground 196 "Machine ID: ✗ Mismatch (license from different machine)"
+    fi
+  fi
+  
+  # Show last verified date if available
+  if [[ -f "${LICENSE_DIR:-$HOME/.config/wizado}/license.json" ]]; then
+    local last_verified
+    last_verified=$(_read_license_field "lastVerified" 2>/dev/null || echo "")
+    if [[ -n "$last_verified" ]]; then
+      echo ""
+      gum style --foreground 245 "Last Verified: $last_verified"
+    fi
+  fi
+  
+  echo ""
+  gum input --placeholder "Press Enter to continue..."
+}
+
+# Prompt to clear license
+clear_license_prompt() {
+  echo ""
+  if gum confirm "Clear stored license? This cannot be undone."; then
+    clear_license
+    gum style --foreground 82 "License cleared."
+    sleep 1
+  fi
 }
 
 show_menu() {
   clear
   echo ""
+  
+  # Get license status for display
+  local license_status
+  license_status=$(get_license_status_display)
+  
   gum style --border normal --padding "1 2" --border-foreground 212 \
     "WIZADO CONFIGURATION" "" \
     "Steam gaming launcher for Hyprland"
@@ -74,6 +268,8 @@ show_menu() {
     "MangoHud:       ${WIZADO_MANGOHUD}" \
     "Steam UI:       ${WIZADO_STEAM_UI}" \
     "Workspace:      ${WIZADO_WORKSPACE}" \
+    "─────────────────────────" \
+    "🔑 License:     ${license_status}" \
     "─────────────────────────" \
     "▶ Launch Steam" \
     "✓ Save & Exit" \
@@ -101,9 +297,12 @@ show_menu() {
     "Workspace:"*)
       WIZADO_WORKSPACE=$(gum choose --selected="$WIZADO_WORKSPACE" "1" "2" "3" "4" "5" "6" "7" "8" "9" "10")
       ;;
+    "🔑 License:"*)
+      show_license_menu
+      ;;
     "▶ Launch Steam")
       save_config
-      exec wizado
+      exec wizado-launch
       ;;
     "✓ Save & Exit")
       save_config

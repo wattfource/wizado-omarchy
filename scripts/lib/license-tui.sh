@@ -58,6 +58,11 @@ show_license_required() {
       "" \
       "If you have a license key, enter it below." \
       "If you need to purchase a license, select 'Get License'."
+    echo ""
+    gum style \
+      --foreground 39 \
+      --italic \
+      "\$5 for 5 machines at wizado.app"
   else
     echo ""
     echo "═══════════════════════════════════════════"
@@ -65,6 +70,8 @@ show_license_required() {
     echo "═══════════════════════════════════════════"
     echo ""
     echo "  Wizado requires a valid license to run."
+    echo ""
+    echo "  \$5 for 5 machines at wizado.app"
     echo ""
     echo "  If you have a license key, enter it below."
     echo "  If you need to purchase a license, visit:"
@@ -187,7 +194,9 @@ show_purchase_url() {
       --border-foreground 39 \
       --padding "1 2" \
       --margin "1" \
-      "Visit the following URL to purchase a license:" \
+      "Get a Wizado License" \
+      "" \
+      "\$5 for 5 machines" \
       "" \
       "$WIZADO_URL"
     
@@ -208,6 +217,8 @@ show_purchase_url() {
     echo "═══════════════════════════════════════════"
     echo "  GET A LICENSE"
     echo "═══════════════════════════════════════════"
+    echo ""
+    echo "  \$5 for 5 machines"
     echo ""
     echo "  Visit: $WIZADO_URL"
     echo ""

@@ -253,6 +253,7 @@ deploy_scripts() {
   mkdir -p "$CONFIG_DIR"
 
   local launcher_src="${SCRIPT_DIR}/launchers"
+  local lib_src="${SCRIPT_DIR}/lib"
 
   # Install main launcher
   if [[ -f "${launcher_src}/wizado" ]]; then
@@ -262,10 +263,34 @@ deploy_scripts() {
     die "Launcher script not found: ${launcher_src}/wizado"
   fi
 
+  # Install license-gated launcher (for waybar/keybinds)
+  if [[ -f "${launcher_src}/wizado-launch" ]]; then
+    install -Dm755 "${launcher_src}/wizado-launch" "${LOCAL_BIN}/wizado-launch"
+    log "  Installed: ${LOCAL_BIN}/wizado-launch"
+  fi
+
   # Install config TUI
   if [[ -f "${launcher_src}/wizado-config" ]]; then
     install -Dm755 "${launcher_src}/wizado-config" "${LOCAL_BIN}/wizado-config"
     log "  Installed: ${LOCAL_BIN}/wizado-config"
+  fi
+
+  # Install waybar helper
+  if [[ -f "${launcher_src}/wizado-waybar" ]]; then
+    install -Dm755 "${launcher_src}/wizado-waybar" "${LOCAL_BIN}/wizado-waybar"
+    log "  Installed: ${LOCAL_BIN}/wizado-waybar"
+  fi
+
+  # Install library files to user's local share
+  local lib_dest="${HOME}/.local/share/wizado/scripts/lib"
+  mkdir -p "$lib_dest"
+  if [[ -f "${lib_src}/license.sh" ]]; then
+    install -Dm644 "${lib_src}/license.sh" "${lib_dest}/license.sh"
+    log "  Installed: ${lib_dest}/license.sh"
+  fi
+  if [[ -f "${lib_src}/license-tui.sh" ]]; then
+    install -Dm644 "${lib_src}/license-tui.sh" "${lib_dest}/license-tui.sh"
+    log "  Installed: ${lib_dest}/license-tui.sh"
   fi
 
   # Install default config if not exists
@@ -317,16 +342,16 @@ configure_shortcuts() {
     fi
   fi
 
-  # Add bindings
+  # Add bindings - use wizado-launch for license checking
   {
     echo ""
     echo "# Wizado - added by wizado"
     echo "# Steam gaming launcher (runs on workspace, Ctrl+Alt+arrows to switch)"
     if [[ "$bind_style" == "bindd" ]]; then
-      echo "bindd = SUPER SHIFT, S, Steam, exec, ${LOCAL_BIN}/wizado"
+      echo "bindd = SUPER SHIFT, S, Steam, exec, ${LOCAL_BIN}/wizado-launch"
       echo "bindd = SUPER SHIFT, Q, Kill Steam, exec, pkill -9 steam; pkill -9 gamescope"
     else
-      echo "bind = SUPER SHIFT, S, exec, ${LOCAL_BIN}/wizado"
+      echo "bind = SUPER SHIFT, S, exec, ${LOCAL_BIN}/wizado-launch"
       echo "bind = SUPER SHIFT, Q, exec, pkill -9 steam; pkill -9 gamescope"
     fi
     echo "# End Wizado bindings"
@@ -336,6 +361,110 @@ configure_shortcuts() {
 
   hyprctl reload >/dev/null 2>&1 || warn "Hyprland reload may have failed"
   log "Keybindings added to $BINDINGS_CONFIG"
+}
+
+# ============================================================================
+# Waybar Configuration
+# ============================================================================
+
+configure_waybar() {
+  log "Configuring Waybar module..."
+
+  local waybar_config="${HOME}/.config/waybar/config"
+  local waybar_style="${HOME}/.config/waybar/style.css"
+  local wizado_style_src="${SCRIPT_DIR}/config/waybar-style.css"
+
+  # Check if waybar config exists
+  if [[ ! -f "$waybar_config" ]]; then
+    warn "Waybar config not found at $waybar_config"
+    warn "Skipping waybar configuration. You can manually add the wizado module later."
+    return 0
+  fi
+
+  # Backup waybar config
+  cp "$waybar_config" "${waybar_config}.wizado-backup.$(date +%Y%m%d%H%M%S)"
+  log "  Backed up waybar config"
+
+  # Check if wizado module already exists
+  if grep -q '"custom/wizado"' "$waybar_config" 2>/dev/null; then
+    log "  Wizado module already exists in waybar config"
+  else
+    # Add custom/wizado to modules-right if it exists
+    if grep -q '"modules-right"' "$waybar_config" 2>/dev/null; then
+      # Insert wizado module into modules-right array
+      # Try to add it before the last item in modules-right for proper positioning
+      if grep -q '"modules-right".*\[' "$waybar_config"; then
+        # Find the modules-right line and add custom/wizado
+        sed -i 's/"modules-right"\s*:\s*\[/"modules-right": ["custom\/wizado", /' "$waybar_config" 2>/dev/null || true
+        log "  Added custom/wizado to modules-right"
+      fi
+    fi
+
+    # Add the module definition if not present
+    if ! grep -q '"custom/wizado"' "$waybar_config" 2>/dev/null; then
+      # Find a good place to insert the module definition
+      # Try to add it before the closing brace of the config
+      local module_def
+      module_def=$(cat <<'MODULEDEF'
+
+  "custom/wizado": {
+    "format": "{}",
+    "return-type": "json",
+    "exec": "wizado-waybar",
+    "on-click": "wizado-launch",
+    "on-click-right": "wizado-config",
+    "interval": 60,
+    "tooltip": true
+  },
+MODULEDEF
+)
+      # Insert before the last closing brace
+      # This is a bit tricky with JSON, so we'll append and let waybar handle it
+      # A safer approach is to check if it's valid JSON and use jq if available
+      if command -v jq >/dev/null 2>&1; then
+        local tmp_config
+        tmp_config=$(mktemp)
+        if jq '. + {"custom/wizado": {"format": "{}", "return-type": "json", "exec": "wizado-waybar", "on-click": "wizado-launch", "on-click-right": "wizado-config", "interval": 60, "tooltip": true}}' "$waybar_config" > "$tmp_config" 2>/dev/null; then
+          mv "$tmp_config" "$waybar_config"
+          log "  Added wizado module definition (via jq)"
+        else
+          rm -f "$tmp_config"
+          warn "  Could not add module definition automatically"
+          warn "  Please add the following to your waybar config manually:"
+          echo ""
+          cat "${SCRIPT_DIR}/config/waybar-module.jsonc"
+          echo ""
+        fi
+      else
+        warn "  jq not found - cannot safely modify waybar config"
+        warn "  Please add the following to your waybar config manually:"
+        echo ""
+        cat "${SCRIPT_DIR}/config/waybar-module.jsonc"
+        echo ""
+      fi
+    fi
+  fi
+
+  # Add wizado styling to waybar style.css
+  if [[ -f "$waybar_style" ]]; then
+    if ! grep -q '#custom-wizado' "$waybar_style" 2>/dev/null; then
+      if [[ -f "$wizado_style_src" ]]; then
+        echo "" >> "$waybar_style"
+        cat "$wizado_style_src" >> "$waybar_style"
+        log "  Added wizado styling to waybar style.css"
+      fi
+    else
+      log "  Wizado styling already exists in waybar style.css"
+    fi
+  else
+    warn "  Waybar style.css not found"
+  fi
+
+  # Reload waybar if running
+  if pgrep -x waybar >/dev/null 2>&1; then
+    pkill -SIGUSR2 waybar 2>/dev/null || true
+    log "  Signaled waybar to reload"
+  fi
 }
 
 # ============================================================================
@@ -394,6 +523,7 @@ main() {
   maybe_grant_gamescope_cap
   deploy_scripts
   configure_shortcuts
+  configure_waybar
 
   echo ""
   echo "════════════════════════════════════════════════════════════════"
@@ -405,13 +535,22 @@ main() {
   $HAS_AMD && echo "    • AMD GPU"
   $HAS_INTEL && echo "    • Intel GPU"
   echo ""
+  echo "  Waybar:"
+  echo "    • Wizado icon () added to waybar"
+  echo "    • Left-click: Launch Steam"
+  echo "    • Right-click: Settings"
+  echo ""
   echo "  Keybindings:"
   echo "    Super + Shift + S    Launch Steam"
   echo "    Super + Shift + Q    Force-quit Steam"
   echo ""
   echo "  Commands:"
-  echo "    wizado               Launch Steam"
-  echo "    wizado-config        Configure settings"
+  echo "    wizado-launch        Launch Steam (with license check)"
+  echo "    wizado-config        Configure settings & license"
+  echo ""
+  echo "  License:"
+  echo "    A valid license is required to use wizado."
+  echo "    Get one at: https://wizado.app (\$5 for 5 machines)"
   echo ""
   echo "  Config: ${CONFIG_DIR}/config"
   echo ""

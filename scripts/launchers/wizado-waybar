@@ -20,6 +20,7 @@ done
 
 # Check license and output JSON for waybar
 main() {
+  local icon=""  # nf-fa-hat_wizard
   local tooltip="Wizado Gaming Mode"
   local class="inactive"
   local alt="unlicensed"
@@ -36,8 +37,8 @@ main() {
   fi
   
   # Output JSON for waybar
-  printf '{"text": "", "tooltip": "%s", "class": "%s", "alt": "%s"}\n' \
-    "$tooltip" "$class" "$alt"
+  printf '{"text": "%s", "tooltip": "%s", "class": "%s", "alt": "%s"}\n' \
+    "$icon" "$tooltip" "$class" "$alt"
 }
 
 main "$@"

@@ -405,19 +405,20 @@ configure_waybar() {
       tmp_config=$(mktemp)
       
       # Strip comments (for jsonc files) and process with jq
-      if sed 's|//.*||g' "$waybar_config" | jq '
+      # Use absolute paths to ensure waybar can find the scripts
+      if sed 's|//.*||g' "$waybar_config" | jq --arg bin "$LOCAL_BIN" '
         # Add custom/wizado to modules-right if it exists
         if .["modules-right"] then
           .["modules-right"] = ["custom/wizado"] + .["modules-right"]
         else . end |
-        # Add the module definition
+        # Add the module definition with absolute paths
         . + {
           "custom/wizado": {
             "format": "{}",
             "return-type": "json",
-            "exec": "wizado-waybar",
-            "on-click": "wizado-launch",
-            "on-click-right": "wizado-config",
+            "exec": "\($bin)/wizado-waybar",
+            "on-click": "\($bin)/wizado-launch",
+            "on-click-right": "\($bin)/wizado-config",
             "interval": 60,
             "tooltip": true
           }

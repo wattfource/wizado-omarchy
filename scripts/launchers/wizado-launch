@@ -27,6 +27,9 @@ fi
 source "${LICENSE_LIB}/license.sh"
 [[ -f "${LICENSE_LIB}/license-tui.sh" ]] && source "${LICENSE_LIB}/license-tui.sh"
 
+# Target workspace for wizado
+WIZADO_WORKSPACE="${WIZADO_WORKSPACE:-10}"
+
 # Auto-detect available terminal emulator
 detect_terminal() {
   local terminals=("kitty" "alacritty" "foot" "konsole" "gnome-terminal" "xterm")
@@ -40,40 +43,17 @@ detect_terminal() {
   return 1
 }
 
-# Get terminal command with appropriate flags for running a command
-get_terminal_cmd() {
-  local term="$1"
-  local cmd="$2"
-  
-  case "$term" in
-    kitty)
-      echo "kitty --class wizado-tui -e $cmd"
-      ;;
-    alacritty)
-      echo "alacritty --class wizado-tui -e $cmd"
-      ;;
-    foot)
-      echo "foot --app-id wizado-tui $cmd"
-      ;;
-    konsole)
-      echo "konsole -e $cmd"
-      ;;
-    gnome-terminal)
-      echo "gnome-terminal -- $cmd"
-      ;;
-    xterm)
-      echo "xterm -e $cmd"
-      ;;
-    *)
-      echo ""
-      ;;
-  esac
-}
-
 # Show license required notification
 show_license_notification() {
   if command -v notify-send >/dev/null 2>&1; then
     notify-send -i dialog-warning "Wizado" "License required. Opening settings..." 2>/dev/null || true
+  fi
+}
+
+# Switch to workspace 10
+switch_to_workspace() {
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl dispatch workspace "$WIZADO_WORKSPACE" >/dev/null 2>&1 || true
   fi
 }
 
@@ -88,107 +68,47 @@ run_license_tui() {
     exit 1
   fi
   
-  # Create a temporary script for the license flow
-  local tui_script
-  tui_script=$(mktemp /tmp/wizado-license-tui.XXXXXX.sh)
-  chmod +x "$tui_script"
+  # Switch to workspace 10 first
+  switch_to_workspace
   
-  cat > "$tui_script" << 'TUISCRIPT'
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Source license functions
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for lib_path in \
-    "${SCRIPT_DIR}/../lib" \
-    "/usr/share/wizado/scripts/lib" \
-    "${HOME}/.local/share/wizado/scripts/lib"; do
-  if [[ -f "${lib_path}/license.sh" ]]; then
-    source "${lib_path}/license.sh"
-    source "${lib_path}/license-tui.sh"
-    break
-  fi
-done
-
-# Main license entry flow
-main() {
-  while true; do
-    local license_key
-    license_key=$(run_license_prompt "${LICENSE_STATUS:-no_license}")
-    local prompt_result=$?
-    
-    case $prompt_result in
-      0)
-        # User entered a license key
-        if [[ -n "$license_key" ]]; then
-          show_verifying
-          if activate_license "$license_key"; then
-            show_activation_success "$ACTIVATION_EMAIL" "$SLOTS_USED" "$SLOTS_TOTAL"
-            # License activated, now launch wizado
-            exec wizado
-          else
-            show_activation_failure "$ACTIVATION_MESSAGE"
-            sleep 2
-          fi
-        fi
-        ;;
-      1)
-        # User wants to purchase - show URL and continue loop
-        sleep 2
-        ;;
-      2)
-        # User cancelled
-        exit 0
-        ;;
-    esac
-  done
-}
-
-main
-TUISCRIPT
-
-  # Launch the TUI in the detected terminal
   show_license_notification
   
+  # Launch terminal with wizado-config which has the license TUI built in
+  # Using wizado-config directly is more reliable than a temp script
   case "$terminal" in
     kitty)
-      exec kitty --class wizado-tui -e bash "$tui_script"
+      exec kitty --class wizado-tui --title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
       ;;
     alacritty)
-      exec alacritty --class wizado-tui -e bash "$tui_script"
+      exec alacritty --class wizado-tui --title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
       ;;
     foot)
-      exec foot --app-id wizado-tui bash "$tui_script"
+      exec foot --app-id wizado-tui --title "Wizado License" "${HOME}/.local/bin/wizado-config"
       ;;
     konsole)
-      exec konsole -e bash "$tui_script"
+      exec konsole --title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
       ;;
     gnome-terminal)
-      exec gnome-terminal -- bash "$tui_script"
+      exec gnome-terminal --title "Wizado License" -- "${HOME}/.local/bin/wizado-config"
       ;;
     xterm)
-      exec xterm -e bash "$tui_script"
+      exec xterm -title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
       ;;
   esac
 }
 
 # Main entry point
 main() {
-  # Check license status
-  check_license
-  local license_result=$?
+  # Check license status (|| true to prevent set -e from exiting)
+  check_license || true
   
-  case $license_result in
-    0)
-      # License valid - launch wizado
-      exec wizado
-      ;;
-    1|2)
-      # No license or needs activation - show TUI
-      run_license_tui
-      ;;
-  esac
+  # If check_license succeeded (valid license), launch wizado
+  if [[ "$LICENSE_STATUS" == "valid" || "$LICENSE_STATUS" == "offline_grace" ]]; then
+    exec wizado
+  else
+    # No license or needs activation - show TUI
+    run_license_tui
+  fi
 }
 
 main "$@"
-

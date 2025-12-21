@@ -2,6 +2,7 @@
 // Add this module to your waybar config's "modules-right" array
 // and include the module definition in your config file.
 //
+// Icon: nf-fa-hat_wizard ()
 // Example: "modules-right": ["...", "custom/wizado", "..."]
 
 {

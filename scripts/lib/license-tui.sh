@@ -127,9 +127,13 @@ show_license_invalid() {
   fi
 }
 
-# Prompt user to enter license key
-# Returns the entered license key, or empty if cancelled
-prompt_license_key() {
+# Prompt user to enter email and license key
+# Sets: PROMPT_EMAIL and PROMPT_LICENSE global variables
+# Returns: 0 if credentials obtained, 1 if user wants to purchase, 2 if user cancelled
+prompt_license_credentials() {
+  PROMPT_EMAIL=""
+  PROMPT_LICENSE=""
+  
   echo ""
   
   if _has_gum; then
@@ -138,19 +142,38 @@ prompt_license_key() {
     choice=$(gum choose \
       --header "What would you like to do?" \
       --cursor.foreground 212 \
-      "Enter License Key" \
+      "Enter License" \
       "Get License (opens $WIZADO_URL)" \
       "Exit")
     
     case "$choice" in
-      "Enter License Key")
+      "Enter License")
+        # First prompt for email
+        local email
+        email=$(gum input \
+          --placeholder "your@email.com" \
+          --header "Enter email used for purchase:" \
+          --width 50 \
+          --char-limit 100)
+        
+        if [[ -z "$email" ]]; then
+          return 2
+        fi
+        
+        # Then prompt for license key
         local license
         license=$(gum input \
-          --placeholder "XXXX-XXXX-XXXX-XXXX" \
+          --placeholder "XXXX-XXXX-XXXX" \
           --header "Enter your license key:" \
           --width 40 \
-          --char-limit 50)
-        echo "$license"
+          --char-limit 20)
+        
+        if [[ -z "$license" ]]; then
+          return 2
+        fi
+        
+        PROMPT_EMAIL="$email"
+        PROMPT_LICENSE="$license"
         ;;
       "Get License"*)
         show_purchase_url
@@ -162,7 +185,7 @@ prompt_license_key() {
     esac
   else
     echo "Options:"
-    echo "  1) Enter License Key"
+    echo "  1) Enter License"
     echo "  2) Get License (visit $WIZADO_URL)"
     echo "  3) Exit"
     echo ""
@@ -170,8 +193,16 @@ prompt_license_key() {
     
     case "$opt" in
       1)
+        read -r -p "Enter email used for purchase: " email
+        if [[ -z "$email" ]]; then
+          return 2
+        fi
         read -r -p "Enter license key: " license
-        echo "$license"
+        if [[ -z "$license" ]]; then
+          return 2
+        fi
+        PROMPT_EMAIL="$email"
+        PROMPT_LICENSE="$license"
         ;;
       2)
         show_purchase_url
@@ -182,6 +213,17 @@ prompt_license_key() {
         ;;
     esac
   fi
+}
+
+# Legacy wrapper for backward compatibility
+# Returns the entered license key, or empty if cancelled
+prompt_license_key() {
+  prompt_license_credentials
+  local result=$?
+  if [[ $result -eq 0 ]]; then
+    echo "$PROMPT_LICENSE"
+  fi
+  return $result
 }
 
 # Show the purchase URL
@@ -348,7 +390,8 @@ show_verifying() {
 }
 
 # Main license prompt flow
-# Returns: 0 if license obtained, 1 if user wants to purchase, 2 if user cancelled
+# Sets: PROMPT_EMAIL and PROMPT_LICENSE global variables
+# Returns: 0 if credentials obtained, 1 if user wants to purchase, 2 if user cancelled
 run_license_prompt() {
   local reason="${1:-}"
   
@@ -362,6 +405,6 @@ run_license_prompt() {
   fi
   
   echo ""
-  prompt_license_key
+  prompt_license_credentials
 }
 

@@ -164,12 +164,28 @@ show_license_menu() {
 # Enter a new license key
 enter_license_key() {
   echo ""
+  
+  # First prompt for email
+  local email
+  email=$(gum input \
+    --placeholder "your@email.com" \
+    --header "Enter email used for purchase:" \
+    --width 50 \
+    --char-limit 100)
+  
+  if [[ -z "$email" ]]; then
+    gum style --foreground 214 "No email entered."
+    sleep 1
+    return
+  fi
+  
+  # Then prompt for license key
   local license_key
   license_key=$(gum input \
-    --placeholder "XXXX-XXXX-XXXX-XXXX" \
+    --placeholder "XXXX-XXXX-XXXX" \
     --header "Enter your license key:" \
     --width 40 \
-    --char-limit 50)
+    --char-limit 20)
   
   if [[ -z "$license_key" ]]; then
     gum style --foreground 214 "No license key entered."
@@ -181,8 +197,8 @@ enter_license_key() {
   echo ""
   gum spin --spinner dot --title "Activating license..." -- sleep 1
   
-  if activate_license "$license_key"; then
-    show_activation_success "$ACTIVATION_EMAIL" "$SLOTS_USED" "$SLOTS_TOTAL"
+  if activate_license "$email" "$license_key"; then
+    show_activation_success "$email" "$SLOTS_USED" "$SLOTS_TOTAL"
   else
     show_activation_failure "$ACTIVATION_MESSAGE"
     sleep 2
@@ -199,10 +215,17 @@ view_license_status() {
   
   check_license 2>/dev/null
   
-  local stored_license stored_machine_id current_machine_id
+  local stored_email stored_license stored_machine_id current_machine_id
+  stored_email=$(get_stored_email 2>/dev/null || echo "")
   stored_license=$(get_stored_license 2>/dev/null || echo "")
   stored_machine_id=$(get_stored_machine_id 2>/dev/null || echo "")
   current_machine_id=$(generate_machine_id 2>/dev/null || echo "")
+  
+  if [[ -n "$stored_email" ]]; then
+    gum style --foreground 250 "Email: $stored_email"
+  else
+    gum style --foreground 245 "Email: None stored"
+  fi
   
   if [[ -n "$stored_license" ]]; then
     local masked="${stored_license:0:4}****${stored_license: -4}"

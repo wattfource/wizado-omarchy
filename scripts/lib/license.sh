@@ -132,7 +132,8 @@ _needs_reverification() {
 # Call the license verification API
 # Returns: 0 if valid, 1 if invalid, 2 if network error
 verify_license_api() {
-  local license="$1"
+  local email="$1"
+  local license="$2"
   local response http_code body
   
   # Make the API call
@@ -141,7 +142,7 @@ verify_license_api() {
     --max-time "$((API_TIMEOUT * 2))" \
     -X POST \
     -H "Content-Type: application/json" \
-    -d "{\"license\": \"$license\"}" \
+    -d "{\"email\": \"$email\", \"license\": \"$license\"}" \
     "${WIZADO_API_URL}/license/verify" 2>/dev/null) || {
     return 2  # Network error
   }
@@ -174,8 +175,9 @@ verify_license_api() {
 # Returns: 0 if activated, 1 if failed
 # Sets: ACTIVATION_MESSAGE, ACTIVATION_EMAIL, SLOTS_USED, SLOTS_TOTAL
 activate_license_api() {
-  local license="$1"
-  local machine_id="$2"
+  local email="$1"
+  local license="$2"
+  local machine_id="$3"
   local response http_code body
   
   ACTIVATION_MESSAGE=""
@@ -189,7 +191,7 @@ activate_license_api() {
     --max-time "$((API_TIMEOUT * 2))" \
     -X POST \
     -H "Content-Type: application/json" \
-    -d "{\"license\": \"$license\", \"machineId\": \"$machine_id\"}" \
+    -d "{\"email\": \"$email\", \"license\": \"$license\", \"machineId\": \"$machine_id\"}" \
     "${WIZADO_API_URL}/license/activate" 2>/dev/null) || {
     ACTIVATION_MESSAGE="Network error: Could not reach license server"
     return 1
@@ -235,6 +237,11 @@ get_stored_license() {
   _read_license_field "license"
 }
 
+# Get stored email
+get_stored_email() {
+  _read_license_field "email"
+}
+
 # Get stored machine ID
 get_stored_machine_id() {
   _read_license_field "machineId"
@@ -246,13 +253,14 @@ get_stored_machine_id() {
 check_license() {
   LICENSE_STATUS=""
   
-  local stored_license stored_machine_id current_machine_id
+  local stored_email stored_license stored_machine_id current_machine_id
+  stored_email=$(get_stored_email)
   stored_license=$(get_stored_license)
   stored_machine_id=$(get_stored_machine_id)
   current_machine_id=$(generate_machine_id)
   
   # No license stored
-  if [[ -z "$stored_license" ]]; then
+  if [[ -z "$stored_license" || -z "$stored_email" ]]; then
     LICENSE_STATUS="no_license"
     return 1
   fi
@@ -266,7 +274,7 @@ check_license() {
   # Check if we need to re-verify
   if _needs_reverification; then
     # Try to verify online
-    verify_license_api "$stored_license"
+    verify_license_api "$stored_email" "$stored_license"
     local verify_result=$?
     
     case $verify_result in
@@ -309,12 +317,13 @@ check_license() {
 # Returns: 0 on success, 1 on failure
 # Sets: LICENSE_STATUS, ACTIVATION_MESSAGE
 activate_license() {
-  local license="$1"
+  local email="$1"
+  local license="$2"
   local machine_id
   machine_id=$(generate_machine_id)
   
-  if activate_license_api "$license" "$machine_id"; then
-    _write_license_file "$license" "$machine_id" "$ACTIVATION_EMAIL"
+  if activate_license_api "$email" "$license" "$machine_id"; then
+    _write_license_file "$license" "$machine_id" "$email"
     LICENSE_STATUS="activated"
     return 0
   else

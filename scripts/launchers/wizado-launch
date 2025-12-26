@@ -32,13 +32,28 @@ WIZADO_WORKSPACE="${WIZADO_WORKSPACE:-10}"
 
 # Auto-detect available terminal emulator
 detect_terminal() {
-  local terminals=("kitty" "alacritty" "foot" "konsole" "gnome-terminal" "xterm")
+  # Common terminal emulators (including modern ones like ghostty, wezterm)
+  # Check specific terminals first, then fall back to xdg-terminal-exec
+  local terminals=("ghostty" "kitty" "alacritty" "wezterm" "foot" "konsole" "gnome-terminal" "xfce4-terminal" "xterm")
   for term in "${terminals[@]}"; do
     if command -v "$term" >/dev/null 2>&1; then
       echo "$term"
       return 0
     fi
   done
+  
+  # Fallback to xdg-terminal-exec if available
+  if command -v xdg-terminal-exec >/dev/null 2>&1; then
+    echo "xdg-terminal-exec"
+    return 0
+  fi
+  
+  # Last resort: check TERMINAL env var
+  if [[ -n "${TERMINAL:-}" ]] && command -v "$TERMINAL" >/dev/null 2>&1; then
+    echo "$TERMINAL"
+    return 0
+  fi
+  
   echo ""
   return 1
 }
@@ -75,24 +90,50 @@ run_license_tui() {
   
   # Launch terminal with wizado-config which has the license TUI built in
   # Using wizado-config directly is more reliable than a temp script
+  local config_cmd="${HOME}/.local/bin/wizado-config"
+  [[ -x "$config_cmd" ]] || config_cmd="wizado-config"
+  
   case "$terminal" in
+    ghostty)
+      exec ghostty --class=wizado-tui --title="Wizado License" -e "$config_cmd"
+      ;;
     kitty)
-      exec kitty --class wizado-tui --title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
+      exec kitty --class wizado-tui --title "Wizado License" -e "$config_cmd"
       ;;
     alacritty)
-      exec alacritty --class wizado-tui --title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
+      exec alacritty --class wizado-tui --title "Wizado License" -e "$config_cmd"
+      ;;
+    wezterm)
+      exec wezterm start --class wizado-tui -- "$config_cmd"
       ;;
     foot)
-      exec foot --app-id wizado-tui --title "Wizado License" "${HOME}/.local/bin/wizado-config"
+      exec foot --app-id wizado-tui --title "Wizado License" "$config_cmd"
       ;;
     konsole)
-      exec konsole --title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
+      exec konsole --title "Wizado License" -e "$config_cmd"
       ;;
     gnome-terminal)
-      exec gnome-terminal --title "Wizado License" -- "${HOME}/.local/bin/wizado-config"
+      exec gnome-terminal --title "Wizado License" -- "$config_cmd"
+      ;;
+    xfce4-terminal)
+      exec xfce4-terminal --title "Wizado License" -e "$config_cmd"
       ;;
     xterm)
-      exec xterm -title "Wizado License" -e "${HOME}/.local/bin/wizado-config"
+      exec xterm -title "Wizado License" -e "$config_cmd"
+      ;;
+    xdg-terminal-exec)
+      exec xdg-terminal-exec --title "Wizado License" -- "$config_cmd"
+      ;;
+    *)
+      # Fallback: try common patterns
+      # Try xdg-terminal-exec style first (command as argument)
+      "$terminal" --title "Wizado License" -- "$config_cmd" 2>/dev/null && exit 0
+      # Try -e flag
+      "$terminal" -e "$config_cmd" 2>/dev/null && exit 0
+      # Give up
+      echo "Error: Don't know how to launch $terminal with wizado-config" >&2
+      echo "Please run 'wizado-config' manually to enter your license." >&2
+      exit 1
       ;;
   esac
 }

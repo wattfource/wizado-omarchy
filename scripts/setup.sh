@@ -120,6 +120,7 @@ check_dependencies() {
     "steam"
     "gamescope"
     "gum"
+    "jq"
     "bc"
     "lib32-vulkan-icd-loader"
     "vulkan-icd-loader"
@@ -465,8 +466,20 @@ configure_waybar() {
 
   # Reload waybar if running
   if pgrep -x waybar >/dev/null 2>&1; then
-    pkill -SIGUSR2 waybar 2>/dev/null || true
-    log "  Signaled waybar to reload"
+    # Kill and restart waybar for a clean reload (SIGUSR2 doesn't always work)
+    pkill waybar 2>/dev/null || true
+    sleep 0.5
+    waybar &>/dev/null &
+    disown
+    log "  Restarted waybar"
+  fi
+  
+  # Verify the module is in config
+  if grep -q '"custom/wizado"' "$waybar_config" 2>/dev/null; then
+    log "  ✓ Waybar module configured successfully"
+  else
+    warn "  Waybar module may not be configured correctly"
+    warn "  Check your waybar config or add the module manually"
   fi
 }
 
@@ -539,9 +552,10 @@ main() {
   $HAS_INTEL && echo "    • Intel GPU"
   echo ""
   echo "  Waybar:"
-  echo "    • Wizado icon () added to waybar"
-  echo "    • Left-click: Launch Steam"
-  echo "    • Right-click: Settings"
+  echo "    • Wizado icon () added to waybar (requires Nerd Font)"
+  echo "    • Left-click: Launch Steam (or enter license)"
+  echo "    • Right-click: Open settings"
+  echo "    • If icon not visible, restart waybar: pkill waybar && waybar &"
   echo ""
   echo "  Keybindings:"
   echo "    Super + Shift + S    Launch Steam"

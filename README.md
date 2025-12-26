@@ -34,9 +34,25 @@ All while Hyprland keeps running. Simple, reliable, works with NVIDIA.
 - Steam
 - gamescope
 - gum (for TUI config)
+- jq (for waybar config)
 - bc (for FSR calculations)
+- A Nerd Font (for waybar icon)
 
 ## Installation
+
+### One-Liner (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/REPLACE_ME/wizado/main/install.sh | bash
+```
+
+Or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/REPLACE_ME/wizado/main/install.sh | bash
+```
+
+### Manual Installation
 
 ```bash
 git clone https://github.com/REPLACE_ME/wizado.git
@@ -44,14 +60,43 @@ cd wizado
 ./scripts/setup.sh
 ```
 
+### AUR (Coming Soon)
+
+```bash
+yay -S wizado
+wizado setup
+```
+
+## License
+
+Wizado requires a valid license to run. On first launch, you'll be prompted to enter your license key.
+
+- **Price:** $5 for 5 machines
+- **Get a license:** [wizado.app](https://wizado.app)
+
+The license TUI will appear automatically when you press the launch keybind or click the waybar icon.
+
 ## Usage
 
 | Command | Action |
 |---------|--------|
-| `wizado` | Launch Steam |
-| `wizado-config` | Configure settings via TUI |
+| `wizado` | Launch Steam (requires license) |
+| `wizado-launch` | Launch with license prompt |
+| `wizado-config` | Configure settings & license via TUI |
 | `Super + Shift + S` | Launch Steam (keybind) |
 | `Super + Shift + Q` | Force-quit Steam + gamescope |
+
+### Waybar Module
+
+After installation, a wizado icon () appears in your waybar:
+
+- **Left-click:** Launch Steam (or enter license if not activated)
+- **Right-click:** Open settings TUI
+
+If the icon doesn't appear, ensure you have a Nerd Font and restart waybar:
+```bash
+pkill waybar && waybar &
+```
 
 ### Configuration
 

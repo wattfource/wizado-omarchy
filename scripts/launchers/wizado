@@ -45,18 +45,28 @@ done
 # Verify license before proceeding
 if [[ "$LICENSE_VALID" != "true" ]]; then
   log "ERROR: Valid license required"
-  echo ""
-  echo "═══════════════════════════════════════════════════════════════"
-  echo "  WIZADO - LICENSE REQUIRED"
-  echo "═══════════════════════════════════════════════════════════════"
-  echo ""
-  echo "  A valid license is required to run Wizado."
-  echo ""
-  echo "  Get a license: \$5 for 5 machines at https://wizado.app"
-  echo ""
-  echo "  To enter your license, run: wizado-config"
-  echo "  Or use: wizado-launch (will prompt for license)"
-  echo ""
+  
+  # If running interactively (attached to terminal), show message
+  # Otherwise, try to launch the config TUI
+  if [[ -t 0 && -t 1 ]]; then
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  WIZADO - LICENSE REQUIRED"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  A valid license is required to run Wizado."
+    echo ""
+    echo "  Get a license: \$5 for 5 machines at https://wizado.app"
+    echo ""
+    echo "  To enter your license, run: wizado-config"
+    echo "  Or use: wizado-launch (will prompt for license)"
+    echo ""
+  else
+    # Non-interactive - try to launch wizado-launch which handles TUI spawning
+    if command -v wizado-launch >/dev/null 2>&1; then
+      exec wizado-launch
+    fi
+  fi
   exit 1
 fi
 

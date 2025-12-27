@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/wattfource/wizado/internal/config"
 )
@@ -69,7 +70,12 @@ func Launch(cfg *config.Config) error {
 	switchWorkspace(targetWorkspace)
 	
 	// Build full command
-	steamArgs := []string{"-" + cfg.SteamUI}
+	// Use gamepadui for Steam Deck-like experience, tenfoot for Big Picture
+	steamUI := cfg.SteamUI
+	if steamUI == "" {
+		steamUI = "gamepadui"
+	}
+	steamArgs := []string{"-" + steamUI, "-steamos3", "-steampal", "-steamdeck"}
 	fullArgs := append(gsArgs, "--")
 	fullArgs = append(fullArgs, "steam")
 	fullArgs = append(fullArgs, steamArgs...)
@@ -229,12 +235,26 @@ func setupEnvironment(cfg *config.Config, gpu GPUInfo) []string {
 	
 	env = append(env, "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0")
 	
+	// Steam-specific environment
+	env = append(env, "STEAM_RUNTIME_PREFER_HOST_LIBRARIES=0")
+	env = append(env, "STEAM_FORCE_DESKTOPUI_SCALING=1")
+	
+	// Gamescope integration
+	env = append(env, "STEAM_GAMESCOPE_NIS_SUPPORTED=1")
+	env = append(env, "STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1")
+	env = append(env, "STEAM_GAMESCOPE_TEARING_SUPPORTED=1")
+	env = append(env, "STEAM_GAMESCOPE_VRR_SUPPORTED=1")
+	env = append(env, "STEAM_DISPLAY_REFRESH_LIMITS=60,72,120,144")
+	
 	if gpu.HasNVIDIA {
 		env = append(env, "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json")
 		env = append(env, "__GLX_VENDOR_LIBRARY_NAME=nvidia")
 		env = append(env, "__GL_SHADER_DISK_CACHE=1")
 		env = append(env, "WLR_NO_HARDWARE_CURSORS=1")
 		env = append(env, "XCURSOR_SIZE=24")
+		// NVIDIA-specific for gamescope
+		env = append(env, "__GL_GSYNC_ALLOWED=1")
+		env = append(env, "__GL_VRR_ALLOWED=1")
 	}
 	
 	return env
@@ -243,6 +263,8 @@ func setupEnvironment(cfg *config.Config, gpu GPUInfo) []string {
 func killSteam() {
 	exec.Command("pkill", "-9", "steam").Run()
 	exec.Command("pkill", "-9", "steamwebhelper").Run()
+	// Give time for processes to fully terminate
+	time.Sleep(time.Second)
 }
 
 func stopHypridle() bool {

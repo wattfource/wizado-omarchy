@@ -65,6 +65,10 @@ build_and_install() {
   log "Installing wizado..."
   sudo install -Dm755 wizado /usr/bin/wizado || die "Install failed (need sudo)"
   
+  # Install helper scripts
+  sudo install -Dm755 scripts/bin/wizado-menu /usr/bin/wizado-menu
+  sudo install -Dm755 scripts/bin/wizado-menu-float /usr/bin/wizado-menu-float
+  
   # Install config files
   sudo install -Dm644 scripts/config/default.conf /usr/share/wizado/default.conf
   sudo install -Dm644 scripts/config/waybar-module.jsonc /usr/share/wizado/waybar-module.jsonc

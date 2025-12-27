@@ -7,7 +7,7 @@ arch=('x86_64')
 url="https://github.com/wattfource/wizado-omarchy"
 license=('MIT')
 makedepends=('go>=1.21')
-depends=('glibc')
+depends=('glibc' 'gum' 'jq')
 optdepends=(
   'steam: Steam client'
   'gamescope: Gaming compositor'
@@ -33,8 +33,12 @@ build() {
 package() {
   cd "wizado-omarchy-${pkgver}"
   
-  # Install the binary
+  # Install the main binary
   install -Dm755 wizado "${pkgdir}/usr/bin/wizado"
+  
+  # Install helper scripts
+  install -Dm755 scripts/bin/wizado-menu "${pkgdir}/usr/bin/wizado-menu"
+  install -Dm755 scripts/bin/wizado-menu-float "${pkgdir}/usr/bin/wizado-menu-float"
   
   # Install default config
   install -Dm644 scripts/config/default.conf "${pkgdir}/usr/share/${pkgname}/default.conf"

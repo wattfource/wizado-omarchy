@@ -65,6 +65,8 @@ On first launch, you'll be prompted to enter your email and license key.
 | `wizado status` | Output JSON for waybar |
 | `wizado activate EMAIL KEY` | Activate license (non-interactive) |
 | `wizado remove` | Remove configuration and keybindings |
+| `wizado-menu` | Open TUI menu |
+| `wizado-menu-float` | Open TUI in floating terminal |
 
 ### Keybindings (after setup)
 
@@ -77,8 +79,18 @@ On first launch, you'll be prompted to enter your email and license key.
 
 After `wizado setup`, an icon () appears in your waybar:
 
-- **Left-click:** Launch Steam (or enter license if not activated)
-- **Right-click:** Open settings TUI
+- **Left-click:** Open Wizado menu
+- **Right-click:** Open Wizado menu
+
+### Hyprland Window Rules
+
+Add these to `~/.config/hypr/hyprland.conf` for the floating menu:
+
+```conf
+windowrulev2 = float, class:^(wizado-menu)$
+windowrulev2 = center, class:^(wizado-menu)$
+windowrulev2 = size 500 400, class:^(wizado-menu)$
+```
 
 ### Configuration
 
@@ -113,7 +125,10 @@ make build
 # Install to /usr/bin
 sudo make install
 
-# Clean
+# Uninstall
+sudo make uninstall
+
+# Clean build artifacts
 make clean
 ```
 
@@ -122,6 +137,8 @@ make clean
 ```bash
 wizado remove
 sudo pacman -R wizado  # if installed via AUR
+# or
+sudo make uninstall    # if installed from source
 ```
 
 ## Technical Notes

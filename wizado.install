@@ -8,19 +8,20 @@ post_install() {
   echo ""
   echo "  This will:"
   echo "    - Install Steam and gaming dependencies"
-  echo "    - Add Hyprland keybindings"
+  echo "    - Add Hyprland keybindings (Super+Shift+S)"
+  echo "    - Configure Waybar module"
   echo ""
-  echo "  Keybindings (after setup):"
-  echo "    Super + Shift + S   Launch Steam in gamescope"
+  echo "  Commands:"
+  echo "    wizado           Launch Steam with gamescope"
+  echo "    wizado config    Configure settings & license"
+  echo "    wizado setup     Run system setup"
   echo ""
   echo "════════════════════════════════════════════════════════════════"
   echo "  LICENSE REQUIRED"
   echo "════════════════════════════════════════════════════════════════"
   echo ""
   echo "  Wizado requires a valid license to run."
-  echo ""
-  echo "  On first launch, you will be prompted to enter your license key."
-  echo "  If you don't have a license, visit: https://wizado.app"
+  echo "  Get one at: https://wizado.app (\$10 for 5 machines)"
   echo ""
 }
 
@@ -29,12 +30,9 @@ post_upgrade() {
 }
 
 pre_remove() {
-  # Run removal script if present
+  # Run removal if binary exists
   if command -v wizado >/dev/null 2>&1; then
-    echo "Running wizado remove..."
+    echo "Removing wizado configuration..."
     wizado remove --yes 2>/dev/null || true
   fi
-  
-  # Clean up license file (optional - user may want to keep it)
-  # rm -f "${HOME}/.config/wizado/license.json" 2>/dev/null || true
 }

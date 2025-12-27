@@ -16,6 +16,14 @@ src/
 # Local testing
 PKGBUILD.local
 
+# Private/local files (not for public repo)
+PRIVATE_NOTES.md
+PRIVATE_*.md
+.private/
+notes/
+TODO.local
+*.local.md
+
 # IDE/OS
 .state/
 *.log

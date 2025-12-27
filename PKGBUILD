@@ -17,7 +17,7 @@ optdepends=(
 )
 install="${pkgname}.install"
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/wattfource/wizado-omarchy/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')  # Update with actual checksum after release
+sha256sums=('ec56a8b019e1404b91653824d80781dadf00329ff44ce106daa6a27d81b1085b')
 
 build() {
   cd "wizado-omarchy-${pkgver}"

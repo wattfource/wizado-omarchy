@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wattfource/wizado/internal/config"
 )
 
@@ -202,7 +203,7 @@ func (m Model) viewSettings() string {
 		
 		if i == 7 {
 			// Separator
-			b.WriteString(mutedColor.Render("  " + field) + "\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Render("  " + field) + "\n")
 			continue
 		}
 		

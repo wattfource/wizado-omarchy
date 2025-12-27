@@ -1,180 +1,42 @@
 #!/usr/bin/env bash
-# wizado: License validation functions (hardened)
-# Security features: HMAC signing, hardened machine ID, anti-tampering, clock protection
+# wizado: License validation functions
 
-# ============================================================================
-# CONFIGURATION (LOCKED - do not allow environment overrides for security)
-# ============================================================================
-readonly WIZADO_API_URL="https://wizado.app/api"
-readonly LICENSE_DIR="${HOME}/.config/wizado"
-readonly LICENSE_FILE="${LICENSE_DIR}/license.json"
-readonly TIMESTAMP_FILE="${LICENSE_DIR}/.last_known_time"
-readonly GRACE_PERIOD_DAYS=14
-readonly REVERIFY_DAYS=7
-readonly API_TIMEOUT=5
-readonly CLOCK_DRIFT_TOLERANCE=300  # 5 minutes tolerance for clock drift
+# Configuration
+WIZADO_API_URL="${WIZADO_API_URL:-https://wizado.app/api}"
+LICENSE_DIR="${HOME}/.config/wizado"
+LICENSE_FILE="${LICENSE_DIR}/license.json"
+GRACE_PERIOD_DAYS=14
+REVERIFY_DAYS=7
+API_TIMEOUT=5
 
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
+# Ensure jq is available (fallback to basic parsing if not)
 _has_jq() {
   command -v jq >/dev/null 2>&1
 }
 
-_has_openssl() {
-  command -v openssl >/dev/null 2>&1
-}
-
-# ============================================================================
-# HARDENED MACHINE ID GENERATION
-# Uses multiple hardware identifiers that are difficult to spoof
-# ============================================================================
+# Generate a unique machine ID based on hardware
 generate_machine_id() {
   local machine_id=""
   
-  # 1. System machine-id (standard)
+  # Try multiple sources for hardware identification
   if [[ -f /etc/machine-id ]]; then
-    machine_id+=$(cat /etc/machine-id 2>/dev/null || true)
+    machine_id+=$(cat /etc/machine-id)
   fi
   
-  # 2. DMI Product UUID (hardware-based, harder to fake)
-  if [[ -r /sys/class/dmi/id/product_uuid ]]; then
-    machine_id+=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || true)
-  elif command -v dmidecode >/dev/null 2>&1; then
-    machine_id+=$(sudo dmidecode -s system-uuid 2>/dev/null || true)
-  fi
-  
-  # 3. Root disk serial number
-  local root_disk
-  root_disk=$(df / 2>/dev/null | tail -1 | awk '{print $1}' | sed 's/[0-9]*$//' | xargs basename 2>/dev/null || true)
-  if [[ -n "$root_disk" && -r "/sys/block/${root_disk}/device/serial" ]]; then
-    machine_id+=$(cat "/sys/block/${root_disk}/device/serial" 2>/dev/null || true)
-  elif [[ -n "$root_disk" ]]; then
-    # Try udevadm for disk serial
-    machine_id+=$(udevadm info --query=property --name="/dev/${root_disk}" 2>/dev/null | grep ID_SERIAL= | cut -d= -f2 || true)
-  fi
-  
-  # 4. Primary network interface MAC address (excluding virtual interfaces)
-  local primary_mac
-  primary_mac=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'dev \K\S+' | head -1 || true)
-  if [[ -n "$primary_mac" && -f "/sys/class/net/${primary_mac}/address" ]]; then
-    machine_id+=$(cat "/sys/class/net/${primary_mac}/address" 2>/dev/null || true)
-  fi
-  
-  # 5. CPU info (model and features - same across identical CPUs but adds entropy)
+  # Add CPU info
   if [[ -f /proc/cpuinfo ]]; then
     machine_id+=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true)
-    machine_id+=$(grep -m1 "cpu family" /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true)
   fi
   
-  # 6. GPU identifiers
-  if command -v lspci >/dev/null 2>&1; then
-    machine_id+=$(lspci 2>/dev/null | grep -i "vga\|3d\|display" | head -1 || true)
-  fi
-  
-  # 7. Hostname + username (for per-user uniqueness)
+  # Add hostname
   machine_id+=$(hostname 2>/dev/null || echo "unknown")
+  
+  # Add username for per-user uniqueness
   machine_id+="$USER"
   
-  # Hash everything with SHA-256
+  # Hash it all
   echo -n "$machine_id" | sha256sum | cut -d' ' -f1
 }
-
-# ============================================================================
-# HMAC SIGNATURE FUNCTIONS
-# Provides tamper detection for the license file
-# ============================================================================
-
-# Generate a machine-specific secret key for HMAC
-# This key is derived from hardware identifiers and cannot be easily reproduced
-_generate_hmac_secret() {
-  local secret_material=""
-  
-  # Use multiple sources that are unique to this machine
-  secret_material+=$(cat /etc/machine-id 2>/dev/null || true)
-  secret_material+=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || true)
-  secret_material+=$(hostname 2>/dev/null || true)
-  secret_material+="wizado-license-signing-key-v1"
-  
-  # Derive a key using SHA-256
-  echo -n "$secret_material" | sha256sum | cut -d' ' -f1
-}
-
-# Compute HMAC-SHA256 signature for license data
-_compute_signature() {
-  local license="$1"
-  local email="$2"
-  local machine_id="$3"
-  local activated_at="$4"
-  
-  local secret_key
-  secret_key=$(_generate_hmac_secret)
-  
-  local data_to_sign="${license}|${email}|${machine_id}|${activated_at}"
-  
-  if _has_openssl; then
-    echo -n "$data_to_sign" | openssl dgst -sha256 -hmac "$secret_key" | cut -d' ' -f2
-  else
-    # Fallback: use sha256sum with key prepended (less secure but functional)
-    echo -n "${secret_key}${data_to_sign}" | sha256sum | cut -d' ' -f1
-  fi
-}
-
-# Verify the signature in the license file
-_verify_signature() {
-  local stored_sig stored_license stored_email stored_machine_id stored_activated_at
-  
-  stored_sig=$(_read_license_field "signature")
-  stored_license=$(_read_license_field "license")
-  stored_email=$(_read_license_field "email")
-  stored_machine_id=$(_read_license_field "machineId")
-  stored_activated_at=$(_read_license_field "activatedAt")
-  
-  [[ -n "$stored_sig" ]] || return 1
-  
-  local expected_sig
-  expected_sig=$(_compute_signature "$stored_license" "$stored_email" "$stored_machine_id" "$stored_activated_at")
-  
-  [[ "$stored_sig" == "$expected_sig" ]]
-}
-
-# ============================================================================
-# CLOCK MANIPULATION PROTECTION
-# Detects if system clock has been set backwards to extend grace period
-# ============================================================================
-
-# Save the current timestamp for future reference
-_save_timestamp() {
-  local now
-  now=$(date +%s)
-  mkdir -p "$LICENSE_DIR"
-  echo "$now" > "$TIMESTAMP_FILE" 2>/dev/null
-  chmod 600 "$TIMESTAMP_FILE" 2>/dev/null
-}
-
-# Check if the clock has been manipulated backwards
-_clock_is_valid() {
-  [[ -f "$TIMESTAMP_FILE" ]] || return 0  # No reference, assume valid
-  
-  local last_known now
-  last_known=$(cat "$TIMESTAMP_FILE" 2>/dev/null || echo 0)
-  now=$(date +%s)
-  
-  # Allow small drift (system updates, NTP corrections)
-  local drift=$((last_known - now))
-  
-  if [[ $drift -gt $CLOCK_DRIFT_TOLERANCE ]]; then
-    # Clock has been set back more than tolerance
-    return 1
-  fi
-  
-  return 0
-}
-
-# ============================================================================
-# LICENSE FILE OPERATIONS
-# ============================================================================
 
 # Read a value from the license JSON file
 _read_license_field() {
@@ -190,7 +52,7 @@ _read_license_field() {
   fi
 }
 
-# Write the license file with HMAC signature
+# Write the license file
 _write_license_file() {
   local license="$1"
   local machine_id="$2"
@@ -198,30 +60,22 @@ _write_license_file() {
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   
-  # Compute signature
-  local signature
-  signature=$(_compute_signature "$license" "$email" "$machine_id" "$now")
-  
   mkdir -p "$LICENSE_DIR"
   chmod 700 "$LICENSE_DIR"
   
   cat > "$LICENSE_FILE" <<EOF
 {
   "license": "$license",
-  "email": "$email",
   "machineId": "$machine_id",
   "activatedAt": "$now",
   "lastVerified": "$now",
-  "signature": "$signature"
+  "email": "$email"
 }
 EOF
   chmod 600 "$LICENSE_FILE"
-  
-  # Save timestamp for clock protection
-  _save_timestamp
 }
 
-# Update the lastVerified timestamp (signature remains valid as it's based on activatedAt)
+# Update the lastVerified timestamp
 _update_verified_timestamp() {
   local now
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -235,14 +89,7 @@ _update_verified_timestamp() {
     # Fallback: sed replace
     sed -i "s/\"lastVerified\":.*/\"lastVerified\": \"$now\",/" "$LICENSE_FILE" 2>/dev/null || true
   fi
-  
-  # Update saved timestamp
-  _save_timestamp
 }
-
-# ============================================================================
-# TIME CALCULATIONS
-# ============================================================================
 
 # Calculate days since a timestamp
 _days_since() {
@@ -281,10 +128,6 @@ _needs_reverification() {
   
   [[ $days_since -ge $REVERIFY_DAYS ]]
 }
-
-# ============================================================================
-# API FUNCTIONS
-# ============================================================================
 
 # Call the license verification API
 # Returns: 0 if valid, 1 if invalid, 2 if network error
@@ -384,14 +227,9 @@ activate_license_api() {
   return 1
 }
 
-# ============================================================================
-# PUBLIC API
-# ============================================================================
-
 # Clear the stored license
 clear_license() {
   rm -f "$LICENSE_FILE"
-  rm -f "$TIMESTAMP_FILE"
 }
 
 # Get stored license key
@@ -415,12 +253,6 @@ get_stored_machine_id() {
 check_license() {
   LICENSE_STATUS=""
   
-  # SECURITY CHECK 1: Clock manipulation detection
-  if ! _clock_is_valid; then
-    LICENSE_STATUS="clock_tampered"
-    return 1
-  fi
-  
   local stored_email stored_license stored_machine_id current_machine_id
   stored_email=$(get_stored_email)
   stored_license=$(get_stored_license)
@@ -433,14 +265,7 @@ check_license() {
     return 1
   fi
   
-  # SECURITY CHECK 2: Verify HMAC signature (tamper detection)
-  if ! _verify_signature; then
-    LICENSE_STATUS="tampered"
-    clear_license
-    return 1
-  fi
-  
-  # SECURITY CHECK 3: Machine ID mismatch (moved to different machine)
+  # Machine ID mismatch (moved to different machine)
   if [[ "$stored_machine_id" != "$current_machine_id" ]]; then
     LICENSE_STATUS="machine_mismatch"
     return 2
@@ -506,3 +331,4 @@ activate_license() {
     return 1
   fi
 }
+

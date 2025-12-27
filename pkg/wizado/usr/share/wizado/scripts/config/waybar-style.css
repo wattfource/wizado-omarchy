@@ -1,0 +1,40 @@
+/* Wizado Waybar Module Styling
+ * Add this to your waybar style.css or import it
+ */
+
+#custom-wizado {
+  padding: 0 10px;
+  margin: 0 4px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+/* Licensed state - ready to launch */
+#custom-wizado.licensed {
+  color: #a6e3a1;
+}
+
+#custom-wizado.licensed:hover {
+  background-color: rgba(166, 227, 161, 0.2);
+  color: #a6e3a1;
+}
+
+/* Unlicensed state - needs activation */
+#custom-wizado.unlicensed {
+  color: #f9e2af;
+}
+
+#custom-wizado.unlicensed:hover {
+  background-color: rgba(249, 226, 175, 0.2);
+  color: #f9e2af;
+}
+
+/* Inactive/error state */
+#custom-wizado.inactive {
+  color: #6c7086;
+}
+
+#custom-wizado.inactive:hover {
+  background-color: rgba(108, 112, 134, 0.2);
+}
+

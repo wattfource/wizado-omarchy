@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wizado: Steam Deck Mode - exits Hyprland, runs gamescope+Steam, returns when done
+
+STATE_DIR="${HOME}/.cache/wizado"
+LOG_FILE="${STATE_DIR}/wizado.log"
+DECK_SCRIPT="${STATE_DIR}/deck-mode.sh"
+
+mkdir -p "$STATE_DIR"
+
+log() { echo "[$(date -Is)] $*" >> "$LOG_FILE" 2>/dev/null || true; }
+
+# Requirements
+command -v steam >/dev/null 2>&1 || { echo "Steam not installed"; exit 1; }
+command -v gamescope >/dev/null 2>&1 || { echo "Gamescope not installed"; exit 1; }
+[[ -n "${WAYLAND_DISPLAY:-}" ]] || { echo "Must run from Hyprland"; exit 1; }
+
+# Detect NVIDIA
+NVIDIA_VK_ID=""
+if lspci 2>/dev/null | grep -iq nvidia; then
+  NVIDIA_VK_ID=$(lspci -nn 2>/dev/null | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]' || true)
+fi
+
+# Get resolution
+RES=$(wlr-randr 2>/dev/null | grep -oP '\d+x\d+' | head -1 || echo "2560x1440")
+WIDTH="${RES%x*}"
+HEIGHT="${RES#*x}"
+
+log "Deck Mode: ${WIDTH}x${HEIGHT}, NVIDIA=${NVIDIA_VK_ID:-none}"
+
+# Kill existing Steam
+pkill -9 steam 2>/dev/null || true
+
+# Create deck mode script
+cat > "$DECK_SCRIPT" << DECKEOF
+#!/usr/bin/env bash
+
+WIDTH="$WIDTH"
+HEIGHT="$HEIGHT"
+NVIDIA_VK_ID="$NVIDIA_VK_ID"
+LOG_FILE="$LOG_FILE"
+
+# Wait for Hyprland to exit
+while pgrep -x Hyprland >/dev/null 2>&1; do sleep 0.2; done
+sleep 0.5
+
+# Environment
+export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+export MANGOHUD=0
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+
+# NVIDIA
+if [[ -n "\$NVIDIA_VK_ID" ]]; then
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  export __GL_SHADER_DISK_CACHE=1
+  export WLR_NO_HARDWARE_CURSORS=1
+  export XCURSOR_SIZE=24
+fi
+
+# Gamescope args (minimal - no HDR, no color management)
+ARGS=(-W "\$WIDTH" -H "\$HEIGHT" -w "\$WIDTH" -h "\$HEIGHT" -f -e --disable-color-management)
+[[ -n "\$NVIDIA_VK_ID" ]] && ARGS+=(--prefer-vk-device "\$NVIDIA_VK_ID")
+
+clear
+echo ""
+echo "  WIZADO - STEAM DECK MODE"
+echo "  Resolution: \${WIDTH}x\${HEIGHT}"
+echo "  Exit Steam to return to desktop"
+echo ""
+
+echo "[\$(date -Is)] gamescope \${ARGS[*]} -- steam -gamepadui" >> "\$LOG_FILE"
+gamescope "\${ARGS[@]}" -- steam -gamepadui 2>&1 | tee -a "\$LOG_FILE"
+
+echo "[\$(date -Is)] Restarting Hyprland" >> "\$LOG_FILE"
+exec Hyprland
+DECKEOF
+
+chmod +x "$DECK_SCRIPT"
+
+echo ""
+echo "  Entering Steam Deck Mode..."
+echo ""
+
+# Launch deck script (survives Hyprland exit)
+setsid "$DECK_SCRIPT" </dev/null &>/dev/null &
+sleep 0.3
+
+# Exit Hyprland
+hyprctl dispatch exit

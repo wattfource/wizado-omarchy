@@ -62,7 +62,7 @@ show_license_required() {
     gum style \
       --foreground 39 \
       --italic \
-      "\$10 for 5 machines at wizado.app"
+      "\$5 for 5 machines at wizado.app"
   else
     echo ""
     echo "═══════════════════════════════════════════"
@@ -71,7 +71,7 @@ show_license_required() {
     echo ""
     echo "  Wizado requires a valid license to run."
     echo ""
-    echo "  \$10 for 5 machines at wizado.app"
+    echo "  \$5 for 5 machines at wizado.app"
     echo ""
     echo "  If you have a license key, enter it below."
     echo "  If you need to purchase a license, visit:"
@@ -97,12 +97,6 @@ show_license_invalid() {
       ;;
     "offline_expired")
       message="Cannot verify license (offline) and grace period expired."
-      ;;
-    "tampered")
-      message="License file has been tampered with. Please re-activate."
-      ;;
-    "clock_tampered")
-      message="System clock manipulation detected. Please correct your system time."
       ;;
     *)
       message="License validation failed."
@@ -244,7 +238,7 @@ show_purchase_url() {
       --margin "1" \
       "Get a Wizado License" \
       "" \
-      "\$10 for 5 machines" \
+      "\$5 for 5 machines" \
       "" \
       "$WIZADO_URL"
     
@@ -266,7 +260,7 @@ show_purchase_url() {
     echo "  GET A LICENSE"
     echo "═══════════════════════════════════════════"
     echo ""
-    echo "  \$10 for 5 machines"
+    echo "  \$5 for 5 machines"
     echo ""
     echo "  Visit: $WIZADO_URL"
     echo ""

@@ -56,7 +56,7 @@ if [[ "$LICENSE_VALID" != "true" ]]; then
     echo ""
     echo "  A valid license is required to run Wizado."
     echo ""
-    echo "  Get a license: \$10 for 5 machines at https://wizado.app"
+    echo "  Get a license: \$5 for 5 machines at https://wizado.app"
     echo ""
     echo "  To enter your license, run: wizado-config"
     echo "  Or use: wizado-launch (will prompt for license)"

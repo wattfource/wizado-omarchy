@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wizado-launch: License-gated launcher for wizado
+# Used by waybar and keybindings to launch Steam gaming mode
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Source license functions (user local takes precedence over system)
+LICENSE_LIB=""
+for lib_path in \
+    "${HOME}/.local/share/wizado/scripts/lib" \
+    "${LIB_DIR}" \
+    "/usr/share/wizado/scripts/lib"; do
+  if [[ -f "${lib_path}/license.sh" ]]; then
+    LICENSE_LIB="${lib_path}"
+    break
+  fi
+done
+
+if [[ -z "$LICENSE_LIB" ]]; then
+  echo "Error: Cannot find license.sh" >&2
+  exit 1
+fi
+
+source "${LICENSE_LIB}/license.sh"
+[[ -f "${LICENSE_LIB}/license-tui.sh" ]] && source "${LICENSE_LIB}/license-tui.sh"
+
+# Target workspace for wizado
+WIZADO_WORKSPACE="${WIZADO_WORKSPACE:-10}"
+
+# Auto-detect available terminal emulator
+detect_terminal() {
+  # Common terminal emulators (including modern ones like ghostty, wezterm)
+  # Check specific terminals first, then fall back to xdg-terminal-exec
+  local terminals=("ghostty" "kitty" "alacritty" "wezterm" "foot" "konsole" "gnome-terminal" "xfce4-terminal" "xterm")
+  for term in "${terminals[@]}"; do
+    if command -v "$term" >/dev/null 2>&1; then
+      echo "$term"
+      return 0
+    fi
+  done
+  
+  # Fallback to xdg-terminal-exec if available
+  if command -v xdg-terminal-exec >/dev/null 2>&1; then
+    echo "xdg-terminal-exec"
+    return 0
+  fi
+  
+  # Last resort: check TERMINAL env var
+  if [[ -n "${TERMINAL:-}" ]] && command -v "$TERMINAL" >/dev/null 2>&1; then
+    echo "$TERMINAL"
+    return 0
+  fi
+  
+  echo ""
+  return 1
+}
+
+# Show license required notification
+show_license_notification() {
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -i dialog-warning "Wizado" "License required. Opening settings..." 2>/dev/null || true
+  fi
+}
+
+# Switch to workspace 10
+switch_to_workspace() {
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl dispatch workspace "$WIZADO_WORKSPACE" >/dev/null 2>&1 || true
+  fi
+}
+
+# Run the license TUI in a terminal
+run_license_tui() {
+  local terminal
+  terminal=$(detect_terminal)
+  
+  if [[ -z "$terminal" ]]; then
+    echo "Error: No supported terminal emulator found" >&2
+    echo "Please install one of: kitty, alacritty, foot, konsole, gnome-terminal, xterm" >&2
+    exit 1
+  fi
+  
+  # Switch to workspace 10 first
+  switch_to_workspace
+  
+  show_license_notification
+  
+  # Launch terminal with wizado-config which has the license TUI built in
+  # Using wizado-config directly is more reliable than a temp script
+  local config_cmd="${HOME}/.local/bin/wizado-config"
+  [[ -x "$config_cmd" ]] || config_cmd="wizado-config"
+  
+  case "$terminal" in
+    ghostty)
+      exec ghostty --class=wizado-tui --title="Wizado License" -e "$config_cmd"
+      ;;
+    kitty)
+      exec kitty --class wizado-tui --title "Wizado License" -e "$config_cmd"
+      ;;
+    alacritty)
+      exec alacritty --class wizado-tui --title "Wizado License" -e "$config_cmd"
+      ;;
+    wezterm)
+      exec wezterm start --class wizado-tui -- "$config_cmd"
+      ;;
+    foot)
+      exec foot --app-id wizado-tui --title "Wizado License" "$config_cmd"
+      ;;
+    konsole)
+      exec konsole --title "Wizado License" -e "$config_cmd"
+      ;;
+    gnome-terminal)
+      exec gnome-terminal --title "Wizado License" -- "$config_cmd"
+      ;;
+    xfce4-terminal)
+      exec xfce4-terminal --title "Wizado License" -e "$config_cmd"
+      ;;
+    xterm)
+      exec xterm -title "Wizado License" -e "$config_cmd"
+      ;;
+    xdg-terminal-exec)
+      exec xdg-terminal-exec --title "Wizado License" -- "$config_cmd"
+      ;;
+    *)
+      # Fallback: try common patterns
+      # Try xdg-terminal-exec style first (command as argument)
+      "$terminal" --title "Wizado License" -- "$config_cmd" 2>/dev/null && exit 0
+      # Try -e flag
+      "$terminal" -e "$config_cmd" 2>/dev/null && exit 0
+      # Give up
+      echo "Error: Don't know how to launch $terminal with wizado-config" >&2
+      echo "Please run 'wizado-config' manually to enter your license." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Main entry point
+main() {
+  # Check license status (|| true to prevent set -e from exiting)
+  check_license || true
+  
+  # If check_license succeeded (valid license), launch wizado
+  if [[ "$LICENSE_STATUS" == "valid" || "$LICENSE_STATUS" == "offline_grace" ]]; then
+    exec wizado
+  else
+    # No license or needs activation - show TUI
+    run_license_tui
+  fi
+}
+
+main "$@"

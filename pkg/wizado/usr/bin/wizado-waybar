@@ -33,7 +33,7 @@ main() {
   else
     class="unlicensed"
     alt="unlicensed"
-    tooltip="Wizado Gaming Mode\n━━━━━━━━━━━━━━━━━━━\nLicense Required\n\$10 for 5 machines\nwizado.app\n━━━━━━━━━━━━━━━━━━━\nLeft-click: Enter License\nRight-click: Settings"
+    tooltip="Wizado Gaming Mode\n━━━━━━━━━━━━━━━━━━━\nLicense Required\n\$5 for 5 machines\nwizado.app\n━━━━━━━━━━━━━━━━━━━\nLeft-click: Enter License\nRight-click: Settings"
   fi
   
   # Output JSON for waybar

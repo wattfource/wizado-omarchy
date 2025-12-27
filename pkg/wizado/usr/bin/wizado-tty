@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wizado-tty: Launch Steam directly on a TTY (uses wizado config)
+# Launched automatically via .bash_profile on TTY3
+
+CONFIG_FILE="${HOME}/.config/wizado/config"
+LOG_FILE="${HOME}/.cache/wizado/wizado-tty.log"
+mkdir -p "${HOME}/.cache/wizado"
+
+# Clear log on each startup
+> "$LOG_FILE"
+
+log() { 
+  echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+log "========== WIZADO-TTY STARTING =========="
+log "TTY: $(tty)"
+log "USER: $USER"
+
+# Load config (with defaults)
+WIZADO_RESOLUTION=auto
+WIZADO_FSR=off
+WIZADO_FRAMELIMIT=0
+WIZADO_VRR=off
+WIZADO_HDR=off
+WIZADO_MANGOHUD=off
+WIZADO_STEAM_UI=tenfoot
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  source "$CONFIG_FILE"
+  log "Config loaded from $CONFIG_FILE"
+else
+  log "No config file, using defaults"
+fi
+
+log "Config: FSR=$WIZADO_FSR FPS=$WIZADO_FRAMELIMIT UI=$WIZADO_STEAM_UI HDR=$WIZADO_HDR"
+
+# Detect NVIDIA
+NVIDIA_VK_ID=""
+if lspci 2>/dev/null | grep -iq nvidia; then
+  NVIDIA_VK_ID=$(lspci -nn 2>/dev/null | grep -i "NVIDIA" | grep -oP '\[10de:[0-9a-f]{4}\]' | head -n1 | tr -d '[]' || true)
+  log "NVIDIA detected: $NVIDIA_VK_ID"
+  
+  # NVIDIA environment - critical for reducing glitches
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  export __GL_SHADER_DISK_CACHE=1
+  export __GL_SYNC_TO_VBLANK=0          # Disable vsync at driver level
+  export __GL_GSYNC_ALLOWED=0           # Disable gsync
+  export WLR_NO_HARDWARE_CURSORS=1      # Software cursors
+  export WLR_RENDERER_ALLOW_SOFTWARE=1  # Allow software fallback
+  export XCURSOR_SIZE=24
+  log "NVIDIA environment configured"
+fi
+
+# Environment
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+[[ "$WIZADO_MANGOHUD" == "on" ]] && export MANGOHUD=1 || export MANGOHUD=0
+
+log "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+
+# Resolution - try to detect from EDID or use config
+if [[ "$WIZADO_RESOLUTION" == "auto" ]]; then
+  # Try to get resolution from DRM
+  for card in /sys/class/drm/card*-*/modes; do
+    if [[ -f "$card" ]]; then
+      RES=$(head -1 "$card" 2>/dev/null | grep -oP '\d+x\d+' || true)
+      [[ -n "$RES" ]] && break
+    fi
+  done
+  RES="${RES:-2560x1440}"
+  log "Auto-detected resolution: $RES"
+else
+  RES="$WIZADO_RESOLUTION"
+  log "Using configured resolution: $RES"
+fi
+WIDTH="${RES%x*}"
+HEIGHT="${RES#*x}"
+
+# Build gamescope args - optimized for NVIDIA on TTY
+ARGS=(
+  -W "$WIDTH" 
+  -H "$HEIGHT"
+  -w "$WIDTH"
+  -h "$HEIGHT"
+  -f                              # Fullscreen
+  -e                              # Steam integration
+  --force-windows-fullscreen      # Force fullscreen for all windows
+  --disable-color-management      # Prevent HDR/color issues
+)
+
+# FSR upscaling
+if [[ "$WIZADO_FSR" != "off" ]]; then
+  case "$WIZADO_FSR" in
+    ultra) scale="0.77" ;;
+    quality) scale="0.67" ;;
+    balanced) scale="0.59" ;;
+    performance) scale="0.5" ;;
+  esac
+  inner_w=$(echo "$WIDTH * $scale" | bc | cut -d. -f1)
+  inner_h=$(echo "$HEIGHT * $scale" | bc | cut -d. -f1)
+  ARGS+=(-w "$inner_w" -h "$inner_h" --filter fsr)
+  log "FSR enabled: render at ${inner_w}x${inner_h}, output at ${WIDTH}x${HEIGHT}"
+fi
+
+# Frame limit
+[[ "$WIZADO_FRAMELIMIT" != "0" ]] && ARGS+=(--framerate-limit "$WIZADO_FRAMELIMIT")
+
+# VRR
+[[ "$WIZADO_VRR" == "on" ]] && ARGS+=(--adaptive-sync)
+
+# NVIDIA device
+[[ -n "$NVIDIA_VK_ID" ]] && ARGS+=(--prefer-vk-device "$NVIDIA_VK_ID")
+
+clear
+echo ""
+echo "  ╔═══════════════════════════════════════════════════════════╗"
+echo "  ║              WIZADO - STEAM GAMING SESSION                ║"
+echo "  ╠═══════════════════════════════════════════════════════════╣"
+echo "  ║  Resolution: ${WIDTH}x${HEIGHT}                               ║"
+echo "  ║  FSR: ${WIZADO_FSR}  |  FPS Limit: ${WIZADO_FRAMELIMIT:-unlimited}                    ║"
+echo "  ╠═══════════════════════════════════════════════════════════╣"
+echo "  ║  Exit Steam to restart  |  Ctrl+Alt+F1 for desktop        ║"
+echo "  ╚═══════════════════════════════════════════════════════════╝"
+echo ""
+
+log "Launching gamescope..."
+log "Command: gamescope ${ARGS[*]} -- steam -${WIZADO_STEAM_UI}"
+
+sleep 1
+
+# Try cage first (simpler), fallback to gamescope
+if command -v cage >/dev/null 2>&1; then
+  log "Using cage (simpler compositor)"
+  cage -- steam -${WIZADO_STEAM_UI} 2>&1 | tee -a "$LOG_FILE"
+  GS_EXIT=$?
+else
+  log "Using gamescope"
+  gamescope "${ARGS[@]}" -- steam -${WIZADO_STEAM_UI} 2>&1 | tee -a "$LOG_FILE"
+  GS_EXIT=$?
+fi
+
+log "Gamescope exited with code: $GS_EXIT"
+
+echo ""
+echo "Steam exited (code: $GS_EXIT)"
+echo "Press Enter to restart Steam, or Ctrl+Alt+F1 for desktop."
+read -r
+exec "$0"

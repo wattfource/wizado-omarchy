@@ -149,10 +149,10 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if result.Status == license.StatusValid || result.Status == license.StatusOfflineGrace {
 		class = "licensed"
 		alt = "licensed"
-		tooltip = "Wizado Gaming Mode\\n━━━━━━━━━━━━━━━━━━━\\nLeft-click: Launch Steam\\nRight-click: Settings"
+		tooltip = "Wizado - Steam Gaming Mode\\n━━━━━━━━━━━━━━━━━━━━━━━\\n✓ Licensed\\n\\nLeft-click: Launch Steam\\nRight-click: Menu"
 	} else {
 		class = "unlicensed"
-		tooltip = "Wizado Gaming Mode\\n━━━━━━━━━━━━━━━━━━━\\nLicense Required\\n$10 for 5 machines\\nwizado.app\\n━━━━━━━━━━━━━━━━━━━\\nLeft-click: Enter License\\nRight-click: Settings"
+		tooltip = "Wizado - Steam Gaming Mode\\n━━━━━━━━━━━━━━━━━━━━━━━\\n✗ License Required\\n$10 for 5 machines\\nwizado.app\\n\\nLeft-click: Launch Steam\\nRight-click: Menu"
 	}
 	
 	output := map[string]string{

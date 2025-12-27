@@ -1,4 +1,29 @@
+# Build artifacts
+wizado
+*.tar.gz
+*.tar.zst
+*.pkg.tar.*
+
+# makepkg directories
+pkg/
+src/
+
+# Go
+*.exe
+*.test
+*.out
+
+# Local testing
+PKGBUILD.local
+
+# IDE/OS
 .state/
 *.log
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*~
 
+# Debug
+*.debug

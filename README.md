@@ -4,99 +4,81 @@ Steam gaming launcher for Hyprland on Arch Linux (Omarchy).
 
 Launches Steam in a fullscreen gamescope session on a dedicated workspace.
 
-## How It Works
-
-When you press `Super + Shift + S`:
-1. Finds an empty workspace (or uses workspace 10)
-2. Switches to that workspace
-3. Launches gamescope + Steam in fullscreen
-4. When you exit Steam, returns to your original workspace
-
-All while Hyprland keeps running. Simple, reliable, works with NVIDIA.
-
 ## Features
 
-- One-key launch with `Super + Shift + S`
-- Force-quit with `Super + Shift + Q`
-- TUI configuration via `wizado-config`
-- Auto-detects display resolution
-- Launches on empty workspace
-- Returns to original workspace on exit
-- Suspends hypridle during gaming
+- Single compiled binary (no bash scripts to bypass)
+- License-protected with HMAC-signed local validation
+- TUI configuration with Bubbletea
 - FSR upscaling support
 - Frame rate limiting
 - VRR/Adaptive Sync
 - NVIDIA GPU auto-detection
+- Waybar integration
 
 ## Requirements
 
 - Arch Linux with Hyprland
 - Steam
 - gamescope
-- gum (for TUI config)
-- jq (for waybar config)
-- bc (for FSR calculations)
-- A Nerd Font (for waybar icon)
 
 ## Installation
 
-### One-Liner (Recommended)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/REPLACE_ME/wizado/main/install.sh | bash
-```
-
-Or with wget:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/REPLACE_ME/wizado/main/install.sh | bash
-```
-
-### Manual Installation
-
-```bash
-git clone https://github.com/REPLACE_ME/wizado.git
-cd wizado
-./scripts/setup.sh
-```
-
-### AUR (Coming Soon)
+### AUR (Recommended)
 
 ```bash
 yay -S wizado
 wizado setup
 ```
 
+### From Source
+
+```bash
+git clone https://github.com/wattfource/wizado-omarchy.git
+cd wizado-omarchy
+make build
+sudo make install
+wizado setup
+```
+
+### One-Liner
+
+```bash
+curl -fsSL https://wizado.app/install.sh | bash
+```
+
 ## License
 
-Wizado requires a valid license to run. On first launch, you'll be prompted to enter your license key.
+Wizado requires a valid license to run.
 
-- **Price:** $5 for 5 machines
+- **Price:** $10 for 5 machines
 - **Get a license:** [wizado.app](https://wizado.app)
 
-The license TUI will appear automatically when you press the launch keybind or click the waybar icon.
+On first launch, you'll be prompted to enter your email and license key.
 
 ## Usage
 
 | Command | Action |
 |---------|--------|
-| `wizado` | Launch Steam (requires license) |
-| `wizado-launch` | Launch with license prompt |
-| `wizado-config` | Configure settings & license via TUI |
-| `Super + Shift + S` | Launch Steam (keybind) |
+| `wizado` | Launch Steam (with license check) |
+| `wizado config` | Configure settings & license via TUI |
+| `wizado setup` | Install dependencies and configure system |
+| `wizado status` | Output JSON for waybar |
+| `wizado activate EMAIL KEY` | Activate license (non-interactive) |
+| `wizado remove` | Remove configuration and keybindings |
+
+### Keybindings (after setup)
+
+| Keys | Action |
+|------|--------|
+| `Super + Shift + S` | Launch Steam |
 | `Super + Shift + Q` | Force-quit Steam + gamescope |
 
 ### Waybar Module
 
-After installation, a wizado icon () appears in your waybar:
+After `wizado setup`, an icon () appears in your waybar:
 
 - **Left-click:** Launch Steam (or enter license if not activated)
 - **Right-click:** Open settings TUI
-
-If the icon doesn't appear, ensure you have a Nerd Font and restart waybar:
-```bash
-pkill waybar && waybar &
-```
 
 ### Configuration
 
@@ -112,51 +94,35 @@ WIZADO_STEAM_UI=tenfoot   # tenfoot (Big Picture) or gamepadui (Steam Deck UI)
 WIZADO_WORKSPACE=10       # Preferred workspace (1-10)
 ```
 
-## Why Nested Mode?
+## How It Works
 
-After extensive testing, running gamescope nested inside Hyprland is the only reliable method for NVIDIA GPUs. The performance difference vs "true" Deck mode is negligible (1-5%).
+When you run `wizado` or press `Super + Shift + S`:
 
-**Nested mode benefits:**
-- Stable, no visual glitches
-- Easy to exit (just close Steam)
-- Switch workspaces normally with Ctrl+Alt+arrows
-- Full gamescope features (cursor lock, FSR, frame limiting)
-- Works reliably with NVIDIA
+1. Validates your license (HMAC-signed, machine-bound)
+2. Finds an empty workspace (or uses workspace 10)
+3. Switches to that workspace
+4. Launches gamescope + Steam in fullscreen
+5. When you exit Steam, returns to your original workspace
 
----
-
-## What Doesn't Work (Failure History)
-
-### ❌ TTY3 Mode with NVIDIA (Visual Glitches)
-
-**Goal:** Run gamescope directly on TTY3 (like Steam Deck) for zero compositor overhead.
-
-**Results:**
-- **Severe flickering** - Screen flickers constantly while Steam is running
-- **Color corruption** - Colors become distorted, oversaturated
-- **HDR state leak** - After returning to Hyprland, colors remain corrupted
-- **Mouse glitches** - Visual artifacts follow cursor movement
-
-**Cause:** NVIDIA's proprietary driver has poor support for VT switching when gamescope uses its DRM backend.
-
-### ❌ Direct DRM Gamescope (Seat Conflicts)
+## Building
 
 ```bash
-gamescope --backend drm -- steam -gamepadui
-# → "Could not take control of session: Device or resource busy"
+# Build
+make build
+
+# Install to /usr/bin
+sudo make install
+
+# Clean
+make clean
 ```
 
-Hyprland owns the DRM master and logind seat. Only one compositor can control the GPU at a time.
+## Uninstall
 
-### ❌ Steam Without Gamescope (Ultrawide Issues)
-
-Running `steam -gamepadui` directly works, but:
-- Mouse constrained to wrong area on ultrawide monitors
-- Games render fullscreen but input only works in 16:9/4:3 region
-
-Gamescope fixes this by handling ultrawide scaling.
-
----
+```bash
+wizado remove
+sudo pacman -R wizado  # if installed via AUR
+```
 
 ## Technical Notes
 
@@ -168,8 +134,8 @@ Gamescope fixes this by handling ultrawide scaling.
 -f                         # Fullscreen
 -e                         # Steam integration
 --force-windows-fullscreen # Better game compatibility
---disable-color-management # CRITICAL for NVIDIA - prevents HDR leaking
---prefer-vk-device XXXX:YYYY  # Force specific GPU
+--disable-color-management # CRITICAL for NVIDIA
+--prefer-vk-device XXXX    # Force specific GPU
 ```
 
 ### NVIDIA Environment Variables
@@ -179,34 +145,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
 __GLX_VENDOR_LIBRARY_NAME=nvidia
 __GL_SHADER_DISK_CACHE=1
 WLR_NO_HARDWARE_CURSORS=1
-XCURSOR_SIZE=24
 ```
-
-### Using Gamemode with Individual Games
-
-Gamemode (Feral Interactive) optimizes CPU/GPU while gaming. Enable per-game:
-
-1. Right-click game in Steam → Properties
-2. Launch Options: `gamemoderun %command%`
-
-Don't wrap gamescope with gamemoderun—it should optimize the game, not the compositor.
-
-## Uninstall
-
-```bash
-./scripts/remove.sh
-```
-
-## Glossary
-
-See [GLOSSARY.md](GLOSSARY.md) for detailed explanations of technical terms:
-- Compositor, Wayland, X11, XWayland
-- DRM, KMS, DRM Master
-- Seat, logind, seatd, Session
-- TTY/VT, getty
-- Gamescope, FSR, Proton, DXVK, Vulkan
-- NVIDIA-specific settings and workarounds
-- Environment variables reference
 
 ## License
 

@@ -2,22 +2,20 @@
 set -euo pipefail
 
 # Wizado - One-liner installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/REPLACE_ME/wizado/main/install.sh | bash
+# Usage: curl -fsSL https://wizado.app/install.sh | bash
 #
-# This script:
-# 1. Clones the wizado repo to ~/.local/share/wizado-src/
-# 2. Runs the setup script
-# 3. Optionally removes the source after install
+# This script builds and installs wizado from source.
+# Requires: go >= 1.21, git
 
-REPO_URL="${WIZADO_REPO:-https://github.com/REPLACE_ME/wizado.git}"
-INSTALL_DIR="${HOME}/.local/share/wizado-src"
+REPO_URL="${WIZADO_REPO:-https://github.com/wattfource/wizado-omarchy.git}"
+INSTALL_DIR="${HOME}/.cache/wizado-build"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log() { echo -e "${BLUE}[wizado]${NC} $*"; }
 success() { echo -e "${GREEN}[wizado]${NC} $*"; }
@@ -29,57 +27,57 @@ die() {
   exit 1
 }
 
-# Check prerequisites
 check_prerequisites() {
   log "Checking prerequisites..."
   
   command -v git >/dev/null 2>&1 || die "git is required but not installed"
-  command -v pacman >/dev/null 2>&1 || die "This installer is for Arch Linux (pacman not found)"
+  command -v go >/dev/null 2>&1 || die "go is required but not installed (sudo pacman -S go)"
   
-  # Check if Hyprland is available
+  # Check Go version
+  GO_VERSION=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+')
+  if [[ "$(printf '%s\n' "1.21" "$GO_VERSION" | sort -V | head -n1)" != "1.21" ]]; then
+    die "Go 1.21+ required, found $GO_VERSION"
+  fi
+  
   if ! command -v hyprctl >/dev/null 2>&1; then
     warn "Hyprland not detected. Wizado requires Hyprland."
-    warn "Install Hyprland first, or continue at your own risk."
-    read -r -p "Continue anyway? [y/N]: " reply
-    [[ "$reply" == "y" || "$reply" == "Y" ]] || exit 0
   fi
   
-  success "Prerequisites OK"
+  success "Prerequisites OK (Go $GO_VERSION)"
 }
 
-# Clone or update the repository
 clone_repo() {
-  log "Setting up wizado source..."
+  log "Fetching wizado source..."
   
-  if [[ -d "$INSTALL_DIR/.git" ]]; then
-    log "Existing installation found, updating..."
-    cd "$INSTALL_DIR"
-    git fetch origin
-    git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
-    success "Updated to latest version"
-  else
-    log "Cloning wizado repository..."
-    rm -rf "$INSTALL_DIR"
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
-    success "Repository cloned"
-  fi
+  rm -rf "$INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
+  
+  success "Source fetched"
 }
 
-# Run the setup script
-run_setup() {
-  log "Running wizado setup..."
+build_and_install() {
+  log "Building wizado..."
   cd "$INSTALL_DIR"
   
-  if [[ ! -f "./scripts/setup.sh" ]]; then
-    die "Setup script not found. Repository may be corrupted."
-  fi
+  make build || die "Build failed"
   
-  chmod +x ./scripts/setup.sh
-  ./scripts/setup.sh "$@"
+  log "Installing wizado..."
+  sudo install -Dm755 wizado /usr/bin/wizado || die "Install failed (need sudo)"
+  
+  # Install config files
+  sudo install -Dm644 scripts/config/default.conf /usr/share/wizado/default.conf
+  sudo install -Dm644 scripts/config/waybar-module.jsonc /usr/share/wizado/waybar-module.jsonc
+  sudo install -Dm644 scripts/config/waybar-style.css /usr/share/wizado/waybar-style.css
+  
+  success "Wizado installed to /usr/bin/wizado"
 }
 
-# Main
+cleanup() {
+  log "Cleaning up..."
+  rm -rf "$INSTALL_DIR"
+}
+
 main() {
   echo ""
   echo "╔═══════════════════════════════════════════════════════════════╗"
@@ -90,21 +88,22 @@ main() {
   
   check_prerequisites
   clone_repo
-  run_setup "$@"
+  build_and_install
+  cleanup
   
   echo ""
   success "Wizado installation complete!"
   echo ""
-  echo "  Source location: $INSTALL_DIR"
+  echo "  Next steps:"
+  echo "    wizado setup      # Configure system (install deps, keybinds)"
+  echo "    wizado config     # Enter license and configure settings"
   echo ""
-  echo "  To update in the future:"
-  echo "    cd $INSTALL_DIR && git pull && ./scripts/setup.sh"
+  echo "  License required: \$10 for 5 machines at https://wizado.app"
   echo ""
   echo "  To uninstall:"
   echo "    wizado remove"
-  echo "    rm -rf $INSTALL_DIR"
+  echo "    sudo rm /usr/bin/wizado"
   echo ""
 }
 
 main "$@"
-

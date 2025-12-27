@@ -141,7 +141,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 	// Output JSON for waybar
 	result := license.Check()
 	
-	icon := "" // nf-fa-hat_wizard
+	icon := "\uef01" // nf-fa-hat_wizard
 	tooltip := "Wizado Gaming Mode"
 	class := "inactive"
 	alt := "unlicensed"

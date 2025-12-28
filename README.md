@@ -184,7 +184,6 @@ For NVIDIA GPUs, Wizado sets:
 - GLX vendor library
 - Shader disk cache
 - G-Sync/VRR support
-- Threaded optimizations
 
 ### Gamescope Flags
 
@@ -282,8 +281,6 @@ __GL_SHADER_DISK_CACHE=1
 WLR_NO_HARDWARE_CURSORS=1
 __GL_GSYNC_ALLOWED=1
 __GL_VRR_ALLOWED=1
-__GL_THREADED_OPTIMIZATIONS=1
-__GL_YIELD=NOTHING
 ```
 
 ## Troubleshooting

@@ -1,19 +1,21 @@
-# Maintainer: Your Name <your@email.com>
+# Maintainer: Sean Fournier <sean@wattfource.com>
 pkgname=wizado
 pkgver=1.0.0
 pkgrel=1
-pkgdesc="Steam gaming mode for Hyprland (Omarchy) - compiled binary"
+pkgdesc="Steam gaming mode launcher for Hyprland with gamescope integration"
 arch=('x86_64')
 url="https://github.com/wattfource/wizado-omarchy"
 license=('MIT')
 makedepends=('go>=1.21')
-depends=('glibc' 'gum' 'jq')
+depends=('glibc')
 optdepends=(
-  'steam: Steam client'
-  'gamescope: Gaming compositor'
-  'gamemode: System optimizations'
+  'steam: Steam client (required for gaming)'
+  'gamescope: Gaming compositor (required for gaming)'
+  'gamemode: CPU/GPU performance optimizations'
   'mangohud: Performance overlay'
   'hyprland: Hyprland compositor'
+  'gum: Interactive TUI menu scripts'
+  'jq: JSON parsing for menu scripts'
 )
 install="${pkgname}.install"
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/wattfource/wizado-omarchy/archive/refs/tags/v${pkgver}.tar.gz")

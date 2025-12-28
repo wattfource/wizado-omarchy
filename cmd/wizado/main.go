@@ -13,7 +13,10 @@ import (
 	"github.com/wattfource/wizado/internal/config"
 	"github.com/wattfource/wizado/internal/launcher"
 	"github.com/wattfource/wizado/internal/license"
+	"github.com/wattfource/wizado/internal/logging"
 	"github.com/wattfource/wizado/internal/setup"
+	"github.com/wattfource/wizado/internal/sysinfo"
+	"github.com/wattfource/wizado/internal/telemetry"
 	"github.com/wattfource/wizado/internal/tui"
 )
 
@@ -21,11 +24,22 @@ import (
 var Version = "dev"
 
 func main() {
+	// Initialize logging
+	logCfg := logging.DefaultConfig()
+	logCfg.Component = "wizado"
+	logging.Init(logCfg)
+	
+	// Initialize telemetry
+	telemetryCfg := telemetry.DefaultConfig()
+	telemetryCfg.Version = Version
+	telemetry.Init(telemetryCfg)
+	
 	rootCmd := &cobra.Command{
 		Use:   "wizado",
 		Short: "Steam gaming launcher for Hyprland",
 		Long: `Wizado is a Steam gaming launcher for Hyprland on Arch Linux.
-It provides gamescope integration, FSR upscaling, and per-game configurations.
+It provides gamescope integration, FSR upscaling, GameMode support,
+and per-game configurations optimized for desktop gaming.
 
 License required: $10 for 5 machines at https://wizado.app`,
 		Version: Version,
@@ -71,7 +85,25 @@ License required: $10 for 5 machines at https://wizado.app`,
 	}
 	removeCmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
 
-	rootCmd.AddCommand(configCmd, setupCmd, statusCmd, activateCmd, removeCmd)
+	// Info command - new!
+	infoCmd := &cobra.Command{
+		Use:   "info",
+		Short: "Display system information and diagnostics",
+		Run:   runInfo,
+	}
+	infoCmd.Flags().Bool("json", false, "Output as JSON")
+	
+	// Logs command - new!
+	logsCmd := &cobra.Command{
+		Use:   "logs",
+		Short: "View or manage logs",
+		Run:   runLogs,
+	}
+	logsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
+	logsCmd.Flags().Bool("session", false, "View latest session log")
+	logsCmd.Flags().Bool("clear", false, "Clear all logs")
+
+	rootCmd.AddCommand(configCmd, setupCmd, statusCmd, activateCmd, removeCmd, infoCmd, logsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -79,18 +111,28 @@ License required: $10 for 5 machines at https://wizado.app`,
 }
 
 func runLaunch(cmd *cobra.Command, args []string) {
+	log := logging.WithComponent("main")
+	log.Info("Wizado launch initiated")
+	
+	// Collect system info for telemetry
+	sysInfo := launcher.CollectSystemInfo(Version)
+	
 	// Check license
 	result := license.Check()
 	
 	if result.Status != license.StatusValid && result.Status != license.StatusOfflineGrace {
+		log.Info("License check failed, launching TUI")
+		
 		// Need license - run TUI
 		launchSteam, err := tui.Run()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			log.Errorf("TUI error: %v", err)
 			os.Exit(1)
 		}
 		
 		if !launchSteam {
+			log.Info("User cancelled launch")
 			os.Exit(0)
 		}
 		
@@ -98,19 +140,34 @@ func runLaunch(cmd *cobra.Command, args []string) {
 		result = license.Check()
 		if result.Status != license.StatusValid && result.Status != license.StatusOfflineGrace {
 			fmt.Fprintln(os.Stderr, "License required to launch Steam")
+			log.Error("License required after TUI")
 			os.Exit(1)
 		}
 	}
+	
+	log.Info("License valid, proceeding with launch")
 	
 	// Load config and launch
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		log.Errorf("Config load error: %v", err)
 		os.Exit(1)
 	}
 	
+	// Log system info
+	log.WithFields(map[string]any{
+		"gpu":         sysInfo.GPU.Primary,
+		"cpu":         sysInfo.CPU.Model,
+		"ram_gib":     sysInfo.Memory.TotalMiB / 1024,
+		"resolution":  fmt.Sprintf("%dx%d", sysInfo.Display.Primary.Width, sysInfo.Display.Primary.Height),
+		"controller":  sysInfo.Input.HasController,
+	}).Info("System configuration")
+	
 	if err := launcher.Launch(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Launch failed: %v\n", err)
+		log.Errorf("Launch failed: %v", err)
+		telemetry.RecordError("launcher", err.Error(), nil)
 		os.Exit(1)
 	}
 }
@@ -133,8 +190,13 @@ func runSetup(cmd *cobra.Command, args []string) {
 	
 	if err := setup.Run(opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Setup failed: %v\n", err)
+		telemetry.RecordError("setup", err.Error(), nil)
 		os.Exit(1)
 	}
+	
+	telemetry.RecordEvent(telemetry.EventSetup, map[string]any{
+		"success": true,
+	})
 }
 
 func runStatus(cmd *cobra.Command, args []string) {
@@ -217,6 +279,14 @@ func runRemove(cmd *cobra.Command, args []string) {
 		fmt.Printf("Removed: %s\n", cacheDir)
 	}
 	
+	// Remove local data directory (telemetry)
+	dataDir := filepath.Join(home, ".local", "share", "wizado")
+	if err := os.RemoveAll(dataDir); err != nil {
+		fmt.Printf("Warning: could not remove data: %v\n", err)
+	} else {
+		fmt.Printf("Removed: %s\n", dataDir)
+	}
+	
 	// Remove keybindings from Hyprland config
 	bindingsPaths := []string{
 		filepath.Join(home, ".config", "hypr", "bindings.conf"),
@@ -260,3 +330,96 @@ func runRemove(cmd *cobra.Command, args []string) {
 	fmt.Println("Wizado removed successfully")
 }
 
+func runInfo(cmd *cobra.Command, args []string) {
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	
+	fmt.Println("Collecting system information...")
+	info := sysinfo.Collect(Version)
+	
+	if jsonOutput {
+		data, _ := info.ToJSON()
+		fmt.Println(string(data))
+		return
+	}
+	
+	// Print formatted summary
+	fmt.Print(info.Summary())
+	
+	// Additional wizado-specific info
+	fmt.Println("\nWizado Status")
+	fmt.Println("═════════════")
+	fmt.Printf("  Version: %s\n", Version)
+	
+	// License status
+	result := license.Check()
+	switch result.Status {
+	case license.StatusValid:
+		fmt.Println("  License: ✓ Valid")
+	case license.StatusOfflineGrace:
+		fmt.Println("  License: ✓ Valid (offline mode)")
+	case license.StatusNoLicense:
+		fmt.Println("  License: ✗ Not activated")
+	default:
+		fmt.Printf("  License: ✗ %s\n", result.Status)
+	}
+	
+	// Log location
+	home, _ := os.UserHomeDir()
+	fmt.Printf("  Log file: %s\n", filepath.Join(home, ".cache", "wizado", "wizado.log"))
+	
+	// Telemetry status
+	stats, _ := telemetry.Default().GetStats()
+	fmt.Printf("  Telemetry: %v events recorded\n", stats["event_count"])
+}
+
+func runLogs(cmd *cobra.Command, args []string) {
+	follow, _ := cmd.Flags().GetBool("follow")
+	session, _ := cmd.Flags().GetBool("session")
+	clear, _ := cmd.Flags().GetBool("clear")
+	
+	home, _ := os.UserHomeDir()
+	
+	if clear {
+		logDir := filepath.Join(home, ".cache", "wizado")
+		sessionsDir := filepath.Join(logDir, "sessions")
+		
+		os.Remove(filepath.Join(logDir, "wizado.log"))
+		os.Remove(filepath.Join(logDir, "wizado.log.1"))
+		os.Remove(filepath.Join(logDir, "wizado.log.2"))
+		os.Remove(filepath.Join(logDir, "wizado.log.3"))
+		os.Remove(filepath.Join(logDir, "wizado.log.4"))
+		os.Remove(filepath.Join(logDir, "wizado.log.5"))
+		os.RemoveAll(sessionsDir)
+		
+		fmt.Println("Logs cleared")
+		return
+	}
+	
+	var logFile string
+	if session {
+		logFile = filepath.Join(home, ".cache", "wizado", "latest-session.log")
+	} else {
+		logFile = filepath.Join(home, ".cache", "wizado", "wizado.log")
+	}
+	
+	if _, err := os.Stat(logFile); os.IsNotExist(err) {
+		fmt.Printf("Log file not found: %s\n", logFile)
+		return
+	}
+	
+	if follow {
+		// Use tail -f
+		tailCmd := exec.Command("tail", "-f", logFile)
+		tailCmd.Stdout = os.Stdout
+		tailCmd.Stderr = os.Stderr
+		tailCmd.Run()
+	} else {
+		// Just cat the file
+		data, err := os.ReadFile(logFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading log: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(string(data))
+	}
+}

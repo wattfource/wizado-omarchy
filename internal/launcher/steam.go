@@ -2,6 +2,8 @@
 package launcher
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,6 +16,9 @@ import (
 	"time"
 
 	"github.com/wattfource/wizado/internal/config"
+	"github.com/wattfource/wizado/internal/logging"
+	"github.com/wattfource/wizado/internal/sysinfo"
+	"github.com/wattfource/wizado/internal/telemetry"
 )
 
 // GPU detection result
@@ -24,53 +29,88 @@ type GPUInfo struct {
 	NVIDIAVkID   string
 }
 
+// SessionInfo tracks the current gaming session
+type SessionInfo struct {
+	ID             string
+	StartTime      time.Time
+	Config         *config.Config
+	GPU            GPUInfo
+	Width          int
+	Height         int
+	GameModeActive bool
+}
+
+var log *logging.Logger
+
+func init() {
+	log = logging.WithComponent("launcher")
+}
+
 // Launch starts Steam with gamescope
 func Launch(cfg *config.Config) error {
+	// Initialize session
+	session := &SessionInfo{
+		ID:        generateSessionID(),
+		StartTime: time.Now(),
+		Config:    cfg,
+	}
+	
+	log.Infof("Starting gaming session %s", session.ID)
+	
 	// Verify we're in Wayland
 	if os.Getenv("WAYLAND_DISPLAY") == "" {
-		return fmt.Errorf("must run from Hyprland (no WAYLAND_DISPLAY)")
+		err := fmt.Errorf("must run from Hyprland (no WAYLAND_DISPLAY)")
+		log.Error(err.Error())
+		return err
 	}
 	
 	// Check requirements
-	if _, err := exec.LookPath("steam"); err != nil {
-		return fmt.Errorf("steam not installed")
-	}
-	if _, err := exec.LookPath("gamescope"); err != nil {
-		return fmt.Errorf("gamescope not installed")
-	}
-	if _, err := exec.LookPath("hyprctl"); err != nil {
-		return fmt.Errorf("hyprctl not found")
+	if err := checkRequirements(); err != nil {
+		log.Errorf("Requirements check failed: %v", err)
+		return err
 	}
 	
 	// Detect GPU
-	gpu := detectGPU()
+	session.GPU = detectGPU()
+	log.Infof("GPU detected: NVIDIA=%v AMD=%v Intel=%v", session.GPU.HasNVIDIA, session.GPU.HasAMD, session.GPU.HasIntel)
 	
 	// Get resolution
-	width, height := getResolution(cfg)
+	session.Width, session.Height = getResolution(cfg)
+	log.Infof("Using resolution: %dx%d", session.Width, session.Height)
 	
 	// Build gamescope args
-	gsArgs := buildGamescopeArgs(cfg, gpu, width, height)
+	gsArgs := buildGamescopeArgs(cfg, session.GPU, session.Width, session.Height)
 	
 	// Kill existing Steam
+	log.Debug("Killing any existing Steam processes")
 	killSteam()
 	
 	// Stop hypridle if running
 	hypridleWasRunning := stopHypridle()
+	if hypridleWasRunning {
+		log.Debug("Stopped hypridle")
+	}
 	
 	// Save current workspace
 	originalWorkspace := getCurrentWorkspace()
 	
 	// Find target workspace
 	targetWorkspace := findEmptyWorkspace(cfg.Workspace)
+	log.Infof("Using workspace %d (original: %d)", targetWorkspace, originalWorkspace)
 	
 	// Set up environment
-	env := setupEnvironment(cfg, gpu)
+	env := setupEnvironment(cfg, session.GPU)
+	
+	// Start GameMode if available
+	session.GameModeActive = startGameMode()
+	if session.GameModeActive {
+		log.Info("GameMode activated")
+	}
 	
 	// Switch to gaming workspace
 	switchWorkspace(targetWorkspace)
 	
 	// Build full command
-	// Use gamepadui for Steam Deck-like experience, tenfoot for Big Picture
 	steamUI := cfg.SteamUI
 	if steamUI == "" {
 		steamUI = "gamepadui"
@@ -80,13 +120,41 @@ func Launch(cfg *config.Config) error {
 	fullArgs = append(fullArgs, "steam")
 	fullArgs = append(fullArgs, steamArgs...)
 	
-	// Log what we're launching
-	logFile := createLogFile()
+	// Create log file for this session
+	logFile := createLogFile(session.ID)
 	if logFile != nil {
-		fmt.Fprintf(logFile, "Launching: gamescope %s\n", strings.Join(fullArgs, " "))
-		fmt.Fprintf(logFile, "Resolution: %dx%d\n", width, height)
-		fmt.Fprintf(logFile, "GPU: NVIDIA=%v AMD=%v Intel=%v\n", gpu.HasNVIDIA, gpu.HasAMD, gpu.HasIntel)
+		fmt.Fprintf(logFile, "═══════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(logFile, "  Wizado Gaming Session: %s\n", session.ID)
+		fmt.Fprintf(logFile, "  Started: %s\n", session.StartTime.Format(time.RFC3339))
+		fmt.Fprintf(logFile, "═══════════════════════════════════════════════════════════════\n\n")
+		fmt.Fprintf(logFile, "Command: gamescope %s\n", strings.Join(fullArgs, " "))
+		fmt.Fprintf(logFile, "Resolution: %dx%d\n", session.Width, session.Height)
+		fmt.Fprintf(logFile, "FSR: %s\n", cfg.FSR)
+		fmt.Fprintf(logFile, "Frame Limit: %d\n", cfg.FrameLimit)
+		fmt.Fprintf(logFile, "VRR: %v\n", cfg.VRR)
+		fmt.Fprintf(logFile, "MangoHUD: %v\n", cfg.MangoHUD)
+		fmt.Fprintf(logFile, "GameMode: %v\n", session.GameModeActive)
+		fmt.Fprintf(logFile, "GPU: NVIDIA=%v AMD=%v Intel=%v\n", session.GPU.HasNVIDIA, session.GPU.HasAMD, session.GPU.HasIntel)
+		fmt.Fprintf(logFile, "\n═══════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(logFile, "  Steam/Gamescope Output\n")
+		fmt.Fprintf(logFile, "═══════════════════════════════════════════════════════════════\n\n")
 	}
+	
+	log.Infof("Launching gamescope with args: %s", strings.Join(fullArgs, " "))
+	
+	// Record launch telemetry
+	telemetrySession := &telemetry.SessionData{
+		SessionID:  session.ID,
+		StartTime:  session.StartTime,
+		Resolution: fmt.Sprintf("%dx%d", session.Width, session.Height),
+		FSR:        cfg.FSR,
+		FrameLimit: cfg.FrameLimit,
+		VRR:        cfg.VRR,
+		MangoHUD:   cfg.MangoHUD,
+		GameMode:   session.GameModeActive,
+		SteamUI:    steamUI,
+	}
+	telemetry.RecordLaunch(telemetrySession)
 	
 	// Launch gamescope + Steam
 	cmd := exec.Command("gamescope", fullArgs...)
@@ -96,17 +164,69 @@ func Launch(cfg *config.Config) error {
 	
 	err := cmd.Run()
 	
-	// Cleanup
-	switchWorkspace(originalWorkspace)
-	if hypridleWasRunning {
-		startHypridle()
-	}
+	// Session ended
+	endTime := time.Now()
+	duration := endTime.Sub(session.StartTime)
 	
+	// Log session end
 	if logFile != nil {
+		fmt.Fprintf(logFile, "\n═══════════════════════════════════════════════════════════════\n")
+		fmt.Fprintf(logFile, "  Session Ended: %s\n", endTime.Format(time.RFC3339))
+		fmt.Fprintf(logFile, "  Duration: %s\n", duration.Round(time.Second))
+		if err != nil {
+			fmt.Fprintf(logFile, "  Exit Error: %v\n", err)
+		}
+		fmt.Fprintf(logFile, "═══════════════════════════════════════════════════════════════\n")
 		logFile.Close()
 	}
 	
+	log.Infof("Gaming session ended after %s", duration.Round(time.Second))
+	
+	// Record exit telemetry
+	telemetrySession.EndTime = endTime
+	telemetrySession.Duration = duration
+	if err != nil {
+		telemetrySession.ExitReason = err.Error()
+		telemetrySession.ExitCode = 1
+	}
+	telemetry.RecordExit(telemetrySession)
+	
+	// Cleanup
+	log.Debug("Performing cleanup")
+	
+	// Stop GameMode
+	if session.GameModeActive {
+		stopGameMode()
+		log.Debug("GameMode deactivated")
+	}
+	
+	switchWorkspace(originalWorkspace)
+	if hypridleWasRunning {
+		startHypridle()
+		log.Debug("Restarted hypridle")
+	}
+	
 	return err
+}
+
+func generateSessionID() string {
+	now := time.Now().UnixNano()
+	data := fmt.Sprintf("wizado-session-%d", now)
+	hash := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(hash[:8])
+}
+
+func checkRequirements() error {
+	if _, err := exec.LookPath("steam"); err != nil {
+		return fmt.Errorf("steam not installed")
+	}
+	if _, err := exec.LookPath("gamescope"); err != nil {
+		return fmt.Errorf("gamescope not installed")
+	}
+	if _, err := exec.LookPath("hyprctl"); err != nil {
+		return fmt.Errorf("hyprctl not found")
+	}
+	return nil
 }
 
 func detectGPU() GPUInfo {
@@ -246,6 +366,9 @@ func setupEnvironment(cfg *config.Config, gpu GPUInfo) []string {
 	env = append(env, "STEAM_GAMESCOPE_VRR_SUPPORTED=1")
 	env = append(env, "STEAM_DISPLAY_REFRESH_LIMITS=60,72,120,144")
 	
+	// Input handling - ensure keyboard/mouse work in gamescope
+	env = append(env, "SDL_GAMECONTROLLERCONFIG=")
+	
 	if gpu.HasNVIDIA {
 		env = append(env, "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json")
 		env = append(env, "__GLX_VENDOR_LIBRARY_NAME=nvidia")
@@ -255,9 +378,45 @@ func setupEnvironment(cfg *config.Config, gpu GPUInfo) []string {
 		// NVIDIA-specific for gamescope
 		env = append(env, "__GL_GSYNC_ALLOWED=1")
 		env = append(env, "__GL_VRR_ALLOWED=1")
+		// Performance optimizations for NVIDIA
+		env = append(env, "__GL_THREADED_OPTIMIZATIONS=1")
+		env = append(env, "__GL_YIELD=NOTHING")
 	}
 	
 	return env
+}
+
+// startGameMode enables GameMode for performance optimization
+func startGameMode() bool {
+	// Check if gamemoded is available
+	if _, err := exec.LookPath("gamemoded"); err != nil {
+		log.Debug("gamemoded not found, skipping GameMode")
+		return false
+	}
+	
+	// Check if already running
+	out, _ := exec.Command("gamemoded", "-s").Output()
+	if strings.Contains(string(out), "active") {
+		log.Debug("GameMode already active")
+		return true
+	}
+	
+	// Start gamemode request
+	cmd := exec.Command("gamemoded", "-r")
+	if err := cmd.Run(); err != nil {
+		log.Warnf("Failed to request GameMode: %v", err)
+		return false
+	}
+	
+	// Verify it started
+	time.Sleep(100 * time.Millisecond)
+	out, _ = exec.Command("gamemoded", "-s").Output()
+	return strings.Contains(string(out), "active")
+}
+
+// stopGameMode disables GameMode
+func stopGameMode() {
+	exec.Command("gamemoded", "-r").Run()
 }
 
 func killSteam() {
@@ -339,13 +498,29 @@ func switchWorkspace(ws int) {
 	exec.Command("hyprctl", "dispatch", "workspace", strconv.Itoa(ws)).Run()
 }
 
-func createLogFile() *os.File {
+func createLogFile(sessionID string) *os.File {
 	home, _ := os.UserHomeDir()
-	stateDir := filepath.Join(home, ".cache", "wizado")
+	stateDir := filepath.Join(home, ".cache", "wizado", "sessions")
 	os.MkdirAll(stateDir, 0755)
 	
-	logPath := filepath.Join(stateDir, "wizado.log")
+	// Use session ID in filename for easy identification
+	logPath := filepath.Join(stateDir, fmt.Sprintf("session_%s.log", sessionID))
 	file, _ := os.Create(logPath)
+	
+	// Also create/update a symlink to the latest session
+	latestLink := filepath.Join(home, ".cache", "wizado", "latest-session.log")
+	os.Remove(latestLink)
+	os.Symlink(logPath, latestLink)
+	
 	return file
 }
 
+// CollectSystemInfo gathers and records system information before launch
+func CollectSystemInfo(version string) *sysinfo.SystemInfo {
+	info := sysinfo.Collect(version)
+	
+	// Record snapshot for telemetry
+	telemetry.RecordSystemSnapshot(info)
+	
+	return info
+}

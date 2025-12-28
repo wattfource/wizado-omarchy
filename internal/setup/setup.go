@@ -5,10 +5,15 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/wattfource/wizado/internal/logging"
+	"github.com/wattfource/wizado/internal/sysinfo"
 )
 
 // GPUInfo holds detected GPU information
@@ -25,6 +30,12 @@ type Options struct {
 	DryRun         bool
 }
 
+var log *logging.Logger
+
+func init() {
+	log = logging.WithComponent("setup")
+}
+
 // Run performs the full setup
 func Run(opts Options) error {
 	fmt.Println()
@@ -33,14 +44,46 @@ func Run(opts Options) error {
 	fmt.Println("════════════════════════════════════════════════════════════════")
 	fmt.Println()
 	
-	// Validate environment
+	log.Info("Starting wizado setup")
+	
+	// Validate environment first
 	if err := validateEnvironment(); err != nil {
+		log.Errorf("Environment validation failed: %v", err)
 		return err
 	}
 	
-	// Detect GPUs
-	gpu := detectGPUs()
-	fmt.Printf("Detected GPUs: NVIDIA=%v AMD=%v Intel=%v\n", gpu.HasNVIDIA, gpu.HasAMD, gpu.HasIntel)
+	// Check internet connectivity
+	if !checkInternet() {
+		fmt.Println("⚠ Warning: No internet connection detected")
+		fmt.Println("  Some features may not work correctly without internet.")
+		fmt.Println()
+		log.Warn("No internet connection detected")
+		
+		if !opts.NonInteractive {
+			if !confirm("Continue anyway?") {
+				return fmt.Errorf("setup cancelled - internet required for package installation")
+			}
+		}
+	} else {
+		fmt.Println("✓ Internet connection: OK")
+		log.Info("Internet connection verified")
+	}
+	
+	// Collect and display system information
+	fmt.Println()
+	fmt.Println("Detecting system configuration...")
+	sysInfo := sysinfo.Collect("setup")
+	
+	// Display detected info
+	printSystemInfo(sysInfo)
+	
+	// Convert to our GPUInfo type
+	gpu := GPUInfo{
+		HasNVIDIA:  sysInfo.GPU.HasNVIDIA,
+		HasAMD:     sysInfo.GPU.HasAMD,
+		HasIntel:   sysInfo.GPU.HasIntel,
+		NVIDIAVkID: sysInfo.GPU.PrimaryID,
+	}
 	
 	// Confirm installation
 	if !opts.NonInteractive {
@@ -63,6 +106,7 @@ func Run(opts Options) error {
 	if err := installOptionalPackages(opts); err != nil {
 		// Non-fatal
 		fmt.Printf("Warning: some optional packages failed to install: %v\n", err)
+		log.Warnf("Optional packages failed: %v", err)
 	}
 	
 	// Check user groups
@@ -74,6 +118,7 @@ func Run(opts Options) error {
 	if err := grantGamescopeCap(opts); err != nil {
 		// Non-fatal
 		fmt.Printf("Warning: could not grant gamescope cap_sys_nice: %v\n", err)
+		log.Warnf("Gamescope cap_sys_nice failed: %v", err)
 	}
 	
 	// Configure Hyprland keybindings
@@ -85,12 +130,142 @@ func Run(opts Options) error {
 	if err := configureWaybar(opts); err != nil {
 		// Non-fatal
 		fmt.Printf("Warning: could not configure waybar: %v\n", err)
+		log.Warnf("Waybar config failed: %v", err)
 	}
 	
 	// Print success
-	printSuccess(gpu)
+	printSuccess(gpu, sysInfo)
+	
+	log.Info("Setup completed successfully")
 	
 	return nil
+}
+
+func checkInternet() bool {
+	client := &http.Client{Timeout: 5 * time.Second}
+	
+	// Try multiple endpoints
+	endpoints := []string{
+		"http://connectivitycheck.gstatic.com/generate_204",
+		"http://www.google.com",
+		"http://archlinux.org",
+	}
+	
+	for _, url := range endpoints {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			return true
+		}
+	}
+	
+	return false
+}
+
+func printSystemInfo(info *sysinfo.SystemInfo) {
+	fmt.Println()
+	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+	fmt.Println("│  SYSTEM INFORMATION                                         │")
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	
+	// Hardware
+	fmt.Printf("│  CPU: %-53s │\n", truncate(info.CPU.Model, 53))
+	
+	gpuStr := info.GPU.Primary
+	if info.GPU.DriverVersion != "" {
+		gpuStr += " (v" + info.GPU.DriverVersion + ")"
+	}
+	fmt.Printf("│  GPU: %-53s │\n", truncate(gpuStr, 53))
+	
+	fmt.Printf("│  RAM: %d GiB                                                 │\n", info.Memory.TotalMiB/1024)
+	
+	if info.Display.Primary.Width > 0 {
+		fmt.Printf("│  Display: %dx%d @ %.0f Hz                                  │\n",
+			info.Display.Primary.Width, info.Display.Primary.Height, info.Display.Primary.RefreshHz)
+	}
+	
+	// Input devices
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	fmt.Println("│  INPUT DEVICES                                              │")
+	
+	if info.Input.HasKeyboard {
+		kbName := "detected"
+		if len(info.Input.Keyboards) > 0 {
+			kbName = info.Input.Keyboards[0].Name
+		}
+		fmt.Printf("│  ✓ Keyboard: %-46s │\n", truncate(kbName, 46))
+	} else {
+		fmt.Println("│  ✗ Keyboard: not detected                                   │")
+	}
+	
+	if info.Input.HasMouse {
+		mouseName := "detected"
+		if len(info.Input.Mice) > 0 {
+			mouseName = info.Input.Mice[0].Name
+		}
+		fmt.Printf("│  ✓ Mouse: %-49s │\n", truncate(mouseName, 49))
+	} else {
+		fmt.Println("│  ✗ Mouse: not detected                                      │")
+	}
+	
+	if info.Input.HasController {
+		ctrlName := "detected"
+		if len(info.Input.Controllers) > 0 {
+			ctrlName = info.Input.Controllers[0].Name
+		}
+		fmt.Printf("│  ✓ Controller: %-44s │\n", truncate(ctrlName, 44))
+	} else {
+		fmt.Println("│  ○ Controller: not connected (optional)                     │")
+	}
+	
+	// Software/Dependencies
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	fmt.Println("│  DEPENDENCIES                                               │")
+	
+	printDepStatus("Steam", info.Dependencies.Steam)
+	printDepStatus("Gamescope", info.Dependencies.Gamescope)
+	printDepStatus("GameMode", info.Dependencies.GameMode)
+	printDepStatus("MangoHUD", info.Dependencies.MangoHUD)
+	printDepStatus("Hyprland", info.Dependencies.Hyprland)
+	
+	// Network
+	fmt.Println("├─────────────────────────────────────────────────────────────┤")
+	fmt.Println("│  NETWORK                                                    │")
+	
+	if info.Network.HasInternet {
+		connType := info.Network.ConnectionType
+		if connType == "" {
+			connType = "connected"
+		}
+		if info.Network.SSID != "" {
+			connType = "WiFi: " + info.Network.SSID
+		}
+		fmt.Printf("│  ✓ Internet: %-46s │\n", connType)
+	} else {
+		fmt.Println("│  ✗ Internet: not connected                                  │")
+	}
+	
+	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+	fmt.Println()
+}
+
+func printDepStatus(name string, pkg sysinfo.PackageInfo) {
+	if pkg.Installed {
+		version := pkg.Version
+		if version == "" {
+			version = "installed"
+		}
+		fmt.Printf("│  ✓ %-10s %-47s │\n", name+":", truncate(version, 47))
+	} else {
+		fmt.Printf("│  ✗ %-10s %-47s │\n", name+":", "not installed")
+	}
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 func validateEnvironment() error {
@@ -109,6 +284,11 @@ func validateEnvironment() error {
 	hyprDir := filepath.Join(home, ".config", "hypr")
 	if _, err := os.Stat(hyprDir); os.IsNotExist(err) {
 		return fmt.Errorf("Hyprland config directory not found: %s", hyprDir)
+	}
+	
+	// Verify we're on Wayland (if in a session)
+	if os.Getenv("DISPLAY") != "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		fmt.Println("⚠ Warning: X11 session detected. Wizado requires Wayland/Hyprland.")
 	}
 	
 	return nil
@@ -162,11 +342,12 @@ func ensureMultilib(opts Options) error {
 	}
 	
 	if strings.Contains(string(data), "[multilib]") && !strings.Contains(string(data), "#[multilib]") {
-		fmt.Println("Multilib repository: enabled")
+		fmt.Println("✓ Multilib repository: enabled")
 		return nil
 	}
 	
-	fmt.Println("Warning: Multilib repository NOT enabled (required for Steam 32-bit libraries)")
+	fmt.Println("⚠ Multilib repository NOT enabled (required for Steam 32-bit libraries)")
+	log.Warn("Multilib repository not enabled")
 	
 	if opts.DryRun {
 		fmt.Println("[DRY RUN] Would enable multilib in /etc/pacman.conf")
@@ -186,6 +367,7 @@ func ensureMultilib(opts Options) error {
 	}
 	
 	// Refresh package database
+	fmt.Println("Refreshing package database...")
 	cmd = exec.Command("sudo", "pacman", "-Syy")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -193,6 +375,7 @@ func ensureMultilib(opts Options) error {
 		return fmt.Errorf("failed to refresh package database: %v", err)
 	}
 	
+	log.Info("Multilib repository enabled")
 	return nil
 }
 
@@ -208,6 +391,7 @@ func installDependencies(gpu GPUInfo, opts Options) error {
 		"lib32-mesa",
 		"mesa",
 		"pciutils",
+		"libinput", // For input device detection
 	}
 	
 	// GPU-specific drivers
@@ -227,14 +411,16 @@ func installDependencies(gpu GPUInfo, opts Options) error {
 	}
 	
 	if len(missing) == 0 {
-		fmt.Println("All required dependencies installed")
+		fmt.Println("✓ All required dependencies installed")
 		return nil
 	}
 	
-	fmt.Printf("Missing required packages (%d):\n", len(missing))
+	fmt.Printf("\nMissing required packages (%d):\n", len(missing))
 	for _, dep := range missing {
 		fmt.Printf("  • %s\n", dep)
 	}
+	
+	log.Infof("Missing %d required packages", len(missing))
 	
 	if opts.DryRun {
 		fmt.Println("[DRY RUN] Would install missing packages")
@@ -270,13 +456,14 @@ func installOptionalPackages(opts Options) error {
 	}
 	
 	if len(missing) == 0 {
-		fmt.Println("Optional packages already installed")
+		fmt.Println("✓ Optional packages already installed")
 		return nil
 	}
 	
-	fmt.Println("Optional packages (performance monitoring):")
+	fmt.Println("\nOptional packages (recommended for best performance):")
 	for _, pkg := range missing {
-		fmt.Printf("  • %s\n", pkg)
+		desc := getPackageDescription(pkg)
+		fmt.Printf("  • %s - %s\n", pkg, desc)
 	}
 	
 	if opts.DryRun {
@@ -297,6 +484,21 @@ func installOptionalPackages(opts Options) error {
 	return cmd.Run()
 }
 
+func getPackageDescription(pkg string) string {
+	switch pkg {
+	case "gamemode":
+		return "CPU/GPU performance optimizations"
+	case "lib32-gamemode":
+		return "32-bit gamemode support"
+	case "mangohud":
+		return "Performance overlay (FPS, temps)"
+	case "lib32-mangohud":
+		return "32-bit mangohud support"
+	default:
+		return ""
+	}
+}
+
 func checkUserGroups(opts Options) error {
 	// Get current groups
 	out, err := exec.Command("groups").Output()
@@ -315,11 +517,12 @@ func checkUserGroups(opts Options) error {
 	}
 	
 	if len(missing) == 0 {
-		fmt.Println("User groups: OK")
+		fmt.Println("✓ User groups: OK")
 		return nil
 	}
 	
-	fmt.Printf("Warning: User missing from groups: %s\n", strings.Join(missing, ", "))
+	fmt.Printf("⚠ User missing from groups: %s\n", strings.Join(missing, ", "))
+	log.Warnf("User missing from groups: %v", missing)
 	
 	if opts.DryRun {
 		fmt.Println("[DRY RUN] Would add user to groups")
@@ -340,7 +543,8 @@ func checkUserGroups(opts Options) error {
 		return fmt.Errorf("failed to add user to groups: %v", err)
 	}
 	
-	fmt.Println("⚠ Log out required for group changes to take effect")
+	fmt.Println("⚠ Log out and back in for group changes to take effect")
+	log.Info("User added to groups, logout required")
 	return nil
 }
 
@@ -353,11 +557,12 @@ func grantGamescopeCap(opts Options) error {
 	// Check if already has capability
 	out, err := exec.Command("getcap", gamescopePath).Output()
 	if err == nil && strings.Contains(string(out), "cap_sys_nice") {
-		fmt.Println("Gamescope already has cap_sys_nice")
+		fmt.Println("✓ Gamescope has cap_sys_nice capability")
 		return nil
 	}
 	
 	fmt.Println("Gamescope can run with real-time priority if granted cap_sys_nice")
+	fmt.Println("  This improves frame pacing and reduces input latency")
 	
 	if opts.DryRun {
 		fmt.Println("[DRY RUN] Would grant cap_sys_nice to gamescope")
@@ -459,7 +664,8 @@ bind = SUPER SHIFT, Q, exec, pkill -9 steam; pkill -9 gamescope
 	// Reload Hyprland
 	exec.Command("hyprctl", "reload").Run()
 	
-	fmt.Println("Keybindings added: Super+Shift+S (launch), Super+Shift+Q (kill)")
+	fmt.Println("✓ Keybindings added: Super+Shift+S (launch), Super+Shift+Q (kill)")
+	log.Info("Keybindings configured")
 	return nil
 }
 
@@ -493,7 +699,7 @@ func configureWaybar(opts Options) error {
 	
 	// Check if module already exists
 	if strings.Contains(content, `"custom/wizado"`) {
-		fmt.Println("Wizado module already exists in waybar config")
+		fmt.Println("✓ Wizado module already exists in waybar config")
 		return nil
 	}
 	
@@ -532,12 +738,13 @@ func configureWaybar(opts Options) error {
 				newData, err := json.MarshalIndent(config, "", "  ")
 				if err == nil {
 					os.WriteFile(configPath, newData, 0644)
-					fmt.Println("Added wizado module to waybar config")
+					fmt.Println("✓ Added wizado module to waybar config")
 					
 					// Restart waybar
 					exec.Command("pkill", "waybar").Run()
 					go exec.Command("waybar").Start()
 					
+					log.Info("Waybar module configured")
 					return nil
 				}
 			}
@@ -552,7 +759,7 @@ func configureWaybar(opts Options) error {
 	return nil
 }
 
-func printSuccess(gpu GPUInfo) {
+func printSuccess(gpu GPUInfo, sysInfo *sysinfo.SystemInfo) {
 	fmt.Println()
 	fmt.Println("════════════════════════════════════════════════════════════════")
 	fmt.Println("  INSTALLATION COMPLETE")
@@ -568,6 +775,31 @@ func printSuccess(gpu GPUInfo) {
 	if gpu.HasIntel {
 		fmt.Println("    • Intel GPU")
 	}
+	
+	fmt.Println()
+	fmt.Println("  Performance features:")
+	if sysInfo.Dependencies.GameMode.Installed {
+		fmt.Println("    ✓ GameMode - CPU/GPU optimizations")
+	}
+	if sysInfo.Dependencies.MangoHUD.Installed {
+		fmt.Println("    ✓ MangoHUD - Performance overlay")
+	}
+	if sysInfo.Dependencies.Gamescope.Installed {
+		fmt.Println("    ✓ Gamescope - Gaming compositor")
+	}
+	
+	fmt.Println()
+	fmt.Println("  Input devices:")
+	if sysInfo.Input.HasKeyboard {
+		fmt.Println("    ✓ Keyboard")
+	}
+	if sysInfo.Input.HasMouse {
+		fmt.Println("    ✓ Mouse")
+	}
+	if sysInfo.Input.HasController {
+		fmt.Println("    ✓ Controller")
+	}
+	
 	fmt.Println()
 	fmt.Println("  Keybindings:")
 	fmt.Println("    Super + Shift + S    Launch Steam")
@@ -575,8 +807,9 @@ func printSuccess(gpu GPUInfo) {
 	fmt.Println()
 	fmt.Println("  Commands:")
 	fmt.Println("    wizado               Launch Steam (with license check)")
-	fmt.Println("    wizado config        Configure settings & license")
+	fmt.Println("    wizado config        Configure settings & license via TUI")
 	fmt.Println("    wizado setup         Run this setup again")
+	fmt.Println("    wizado info          Display system information")
 	fmt.Println()
 	fmt.Println("  License:")
 	fmt.Println("    A valid license is required to use wizado.")
@@ -596,4 +829,3 @@ func confirm(prompt string) bool {
 	response = strings.TrimSpace(strings.ToLower(response))
 	return response == "y" || response == "yes"
 }
-

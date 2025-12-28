@@ -378,9 +378,6 @@ func setupEnvironment(cfg *config.Config, gpu GPUInfo) []string {
 		// NVIDIA-specific for gamescope
 		env = append(env, "__GL_GSYNC_ALLOWED=1")
 		env = append(env, "__GL_VRR_ALLOWED=1")
-		// Performance optimizations for NVIDIA
-		env = append(env, "__GL_THREADED_OPTIMIZATIONS=1")
-		env = append(env, "__GL_YIELD=NOTHING")
 	}
 	
 	return env
@@ -420,6 +417,8 @@ func stopGameMode() {
 }
 
 func killSteam() {
+	// Kill existing gamescope first to avoid X socket conflicts
+	exec.Command("pkill", "-9", "gamescope").Run()
 	exec.Command("pkill", "-9", "steam").Run()
 	exec.Command("pkill", "-9", "steamwebhelper").Run()
 	// Give time for processes to fully terminate

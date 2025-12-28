@@ -19,6 +19,7 @@ PKGBUILD.local
 # Private/local files (not for public repo)
 PRIVATE_NOTES.md
 PRIVATE_*.md
+CHEATSHEET.md
 .private/
 notes/
 TODO.local

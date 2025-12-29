@@ -90,7 +90,7 @@ On first launch, you'll be prompted to enter your email and license key.
 
 | Keys | Action |
 |------|--------|
-| `Super + Shift + S` | Launch Steam |
+| `Super + Shift + S` | Open Wizado menu (workspace 10) |
 | `Super + Shift + Q` | Force-quit Steam + gamescope |
 
 ### Waybar Module
@@ -126,18 +126,22 @@ WIZADO_WORKSPACE=10       # Preferred workspace (1-10)
 
 ## How It Works
 
-When you run `wizado` or press `Super + Shift + S`:
+When you press `Super + Shift + S`:
+
+1. Switches to workspace 10
+2. Opens Wizado TUI menu (floating terminal)
+3. From the menu, select "Launch Steam" to start gaming
+
+When Steam launches (`wizado` command):
 
 1. Validates your license (HMAC-signed, machine-bound)
 2. Collects system information for optimal configuration
 3. Activates GameMode (if installed) for CPU/GPU optimizations
-4. Finds an empty workspace (or uses workspace 10)
-5. Stops hypridle to prevent screen blanking
-6. Switches to that workspace
-7. Launches gamescope + Steam in fullscreen
-8. Logs session data for diagnostics
-9. When you exit Steam, returns to your original workspace
-10. Deactivates GameMode and restarts hypridle
+4. Stops hypridle to prevent screen blanking
+5. Launches gamescope + Steam in Big Picture mode
+6. Logs session data for diagnostics
+7. When you exit Steam, returns to your original workspace
+8. Deactivates GameMode and restarts hypridle
 
 ## System Detection
 

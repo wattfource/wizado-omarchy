@@ -640,15 +640,15 @@ func configureKeybindings(opts Options) error {
 	bindings := fmt.Sprintf(`
 
 # Wizado - added by wizado
-# Steam gaming launcher (runs on workspace 10)
+# Opens Wizado TUI menu on workspace 10
 `)
 	
 	if bindStyle == "bindd" {
-		bindings += `bindd = SUPER SHIFT, S, Steam, exec, wizado
+		bindings += `bindd = SUPER SHIFT, S, Wizado Menu, exec, wizado-menu-float
 bindd = SUPER SHIFT, Q, Kill Steam, exec, pkill -9 steam; pkill -9 gamescope
 `
 	} else {
-		bindings += `bind = SUPER SHIFT, S, exec, wizado
+		bindings += `bind = SUPER SHIFT, S, exec, wizado-menu-float
 bind = SUPER SHIFT, Q, exec, pkill -9 steam; pkill -9 gamescope
 `
 	}
@@ -664,7 +664,7 @@ bind = SUPER SHIFT, Q, exec, pkill -9 steam; pkill -9 gamescope
 	// Reload Hyprland
 	exec.Command("hyprctl", "reload").Run()
 	
-	fmt.Println("✓ Keybindings added: Super+Shift+S (launch), Super+Shift+Q (kill)")
+	fmt.Println("✓ Keybindings added: Super+Shift+S (menu), Super+Shift+Q (kill)")
 	log.Info("Keybindings configured")
 	return nil
 }

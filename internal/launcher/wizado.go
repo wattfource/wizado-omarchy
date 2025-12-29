@@ -110,12 +110,16 @@ func Launch(cfg *config.Config) error {
 	// Switch to gaming workspace
 	switchWorkspace(targetWorkspace)
 	
-	// Build full command
+	// Build full command - use desktop-appropriate flags (NOT Steam Deck flags)
 	steamUI := cfg.SteamUI
-	if steamUI == "" {
-		steamUI = "gamepadui"
+	var steamArgs []string
+	if steamUI == "" || steamUI == "tenfoot" {
+		// Big Picture mode for desktop
+		steamArgs = []string{"-tenfoot", "-bigpicture"}
+	} else if steamUI == "gamepadui" {
+		// Gamepad UI without Steam Deck hardware flags
+		steamArgs = []string{"-gamepadui"}
 	}
-	steamArgs := []string{"-" + steamUI, "-steamos3", "-steampal", "-steamdeck"}
 	fullArgs := append(gsArgs, "--")
 	fullArgs = append(fullArgs, "steam")
 	fullArgs = append(fullArgs, steamArgs...)

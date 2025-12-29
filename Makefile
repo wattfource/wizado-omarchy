@@ -1,6 +1,6 @@
 # Wizado Makefile
 
-VERSION ?= 1.0.0
+VERSION ?= 1.0.1
 BINARY = wizado
 LDFLAGS = -s -w -X main.Version=$(VERSION)
 

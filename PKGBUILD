@@ -1,6 +1,6 @@
 # Maintainer: Sean Fournier <sean@wattfource.com>
 pkgname=wizado
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Steam gaming mode launcher for Hyprland with gamescope integration"
 arch=('x86_64')

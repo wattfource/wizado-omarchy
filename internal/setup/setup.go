@@ -704,13 +704,14 @@ func configureWaybar(opts Options) error {
 	}
 	
 	// Try to add module using jq
+	// Note: on-click uses wizado-menu-float to spawn a terminal for the TUI
 	moduleJSON := `{
     "custom/wizado": {
         "format": "{}",
         "return-type": "json",
         "exec": "wizado status",
-        "on-click": "wizado",
-        "on-click-right": "wizado config",
+        "on-click": "wizado-menu-float",
+        "on-click-right": "wizado-menu-float",
         "interval": 60,
         "tooltip": true
     }
@@ -729,8 +730,8 @@ func configureWaybar(opts Options) error {
 					"format":         "{}",
 					"return-type":    "json",
 					"exec":           "wizado status",
-					"on-click":       "wizado",
-					"on-click-right": "wizado config",
+					"on-click":       "wizado-menu-float",
+					"on-click-right": "wizado-menu-float",
 					"interval":       60,
 					"tooltip":        true,
 				}

@@ -225,4 +225,3 @@ func RunLicensePrompt() error {
 	_, err := p.Run()
 	return err
 }
-

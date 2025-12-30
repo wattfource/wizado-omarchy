@@ -112,10 +112,10 @@ func NewModel() Model {
 	return Model{
 		screen:    ScreenMain,
 		menuItems: []string{
-			"▶ Launch Steam",
-			"🔑 License",
-			"⚙ Settings",
-			"✗ Exit",
+			"Launch Steam",
+			"License",
+			"Settings",
+			"Exit",
 		},
 		emailInput:   emailInput,
 		keyInput:     keyInput,

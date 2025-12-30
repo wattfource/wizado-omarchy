@@ -77,7 +77,7 @@ func (m Model) viewMain() string {
 	banner := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(primaryColor).
-		Render("🎮 WIZADO")
+		Render("WIZADO")
 	
 	subtitle := subtitleStyle.Render("Steam Gaming Mode for Hyprland")
 	
@@ -112,25 +112,25 @@ func (m Model) viewMain() string {
 func (m Model) formatLicenseStatus(status license.Status) string {
 	switch status {
 	case license.StatusValid:
-		return successStyle.Render("✓ Licensed")
+		return successStyle.Render("Licensed")
 	case license.StatusOfflineGrace:
-		return warningStyle.Render("✓ Licensed (offline)")
+		return warningStyle.Render("Licensed (offline)")
 	case license.StatusNoLicense:
-		return errorStyle.Render("✗ No license")
+		return errorStyle.Render("No license")
 	case license.StatusInvalid:
-		return errorStyle.Render("✗ Invalid license")
+		return errorStyle.Render("Invalid license")
 	case license.StatusExpired:
-		return errorStyle.Render("✗ License expired")
+		return errorStyle.Render("License expired")
 	case license.StatusMachineMismatch:
-		return warningStyle.Render("⚠ Wrong machine")
+		return warningStyle.Render("Wrong machine")
 	case license.StatusOfflineExpired:
-		return errorStyle.Render("✗ Offline expired")
+		return errorStyle.Render("Offline expired")
 	case license.StatusTampered:
-		return errorStyle.Render("✗ Tampered")
+		return errorStyle.Render("Tampered")
 	case license.StatusClockTampered:
-		return errorStyle.Render("✗ Clock error")
+		return errorStyle.Render("Clock error")
 	default:
-		return lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("? %s", status))
+		return lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("%s", status))
 	}
 }
 

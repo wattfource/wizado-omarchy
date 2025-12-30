@@ -173,9 +173,23 @@ func runLaunch(cmd *cobra.Command, args []string) {
 }
 
 func runConfig(cmd *cobra.Command, args []string) {
-	if _, err := tui.Run(); err != nil {
+	launchSteam, err := tui.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+	
+	// If user selected "Launch Steam", launch it
+	if launchSteam {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := launcher.Launch(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Launch failed: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 

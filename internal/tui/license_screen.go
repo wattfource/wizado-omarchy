@@ -57,7 +57,7 @@ func (m Model) updateLicenseEntry(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		
 		if msg.result.Success {
-			m.message = fmt.Sprintf("✓ License activated! (%d/%d slots used)", 
+			m.message = fmt.Sprintf("License activated! (%d/%d slots used)", 
 				msg.result.SlotsUsed, msg.result.SlotsTotal)
 			m.messageStyle = successStyle
 			// Switch to main screen after short delay

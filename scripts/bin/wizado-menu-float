@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch wizado menu in a floating terminal on workspace 10
+# Launch wizado TUI in a floating terminal on workspace 10
 
 # Switch to workspace 10
 hyprctl dispatch workspace 10 >/dev/null 2>&1
@@ -7,16 +7,16 @@ hyprctl dispatch workspace 10 >/dev/null 2>&1
 # Small delay for workspace switch
 sleep 0.1
 
-# Detect available terminal and launch with menu
+# Detect available terminal and launch wizado TUI
 # Hyprland window rule handles floating via class "wizado-menu"
 if command -v ghostty &>/dev/null; then
-    exec ghostty --class=wizado-menu --title="Wizado" -e wizado-menu
+    exec ghostty --class=wizado-menu --title="Wizado" -e wizado
 elif command -v kitty &>/dev/null; then
-    exec kitty --class=wizado-menu --title="Wizado" wizado-menu
+    exec kitty --class=wizado-menu --title="Wizado" wizado
 elif command -v alacritty &>/dev/null; then
-    exec alacritty --class wizado-menu --title "Wizado" -e wizado-menu
+    exec alacritty --class wizado-menu --title "Wizado" -e wizado
 else
     # Fallback to foot
-    exec foot --app-id=wizado-menu --title="Wizado" wizado-menu
+    exec foot --app-id=wizado-menu --title="Wizado" wizado
 fi
 

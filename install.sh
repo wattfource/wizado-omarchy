@@ -65,8 +65,7 @@ build_and_install() {
   log "Installing wizado..."
   sudo install -Dm755 wizado /usr/bin/wizado || die "Install failed (need sudo)"
   
-  # Install helper scripts
-  sudo install -Dm755 scripts/bin/wizado-menu /usr/bin/wizado-menu
+  # Install helper script for floating terminal launch
   sudo install -Dm755 scripts/bin/wizado-menu-float /usr/bin/wizado-menu-float
   
   # Install config files

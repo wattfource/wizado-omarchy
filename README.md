@@ -71,7 +71,7 @@ On first launch, you'll be prompted to enter your email and license key.
 
 | Command | Action |
 |---------|--------|
-| `wizado` | Launch Steam (with license check) |
+| `wizado` | Open TUI menu (launch Steam from there) |
 | `wizado config` | Configure settings & license via TUI |
 | `wizado setup` | Install dependencies and configure system |
 | `wizado info` | Display system information and diagnostics |
@@ -83,8 +83,7 @@ On first launch, you'll be prompted to enter your email and license key.
 | `wizado status` | Output JSON for waybar |
 | `wizado activate EMAIL KEY` | Activate license (non-interactive) |
 | `wizado remove` | Remove configuration and keybindings |
-| `wizado-menu` | Open TUI menu |
-| `wizado-menu-float` | Open TUI in floating terminal |
+| `wizado-menu-float` | Open TUI in floating terminal on workspace 10 |
 
 ### Keybindings (after setup)
 

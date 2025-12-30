@@ -802,11 +802,11 @@ func printSuccess(gpu GPUInfo, sysInfo *sysinfo.SystemInfo) {
 	
 	fmt.Println()
 	fmt.Println("  Keybindings:")
-	fmt.Println("    Super + Shift + S    Launch Steam")
+	fmt.Println("    Super + Shift + S    Open Wizado Menu")
 	fmt.Println("    Super + Shift + Q    Force-quit Steam")
 	fmt.Println()
 	fmt.Println("  Commands:")
-	fmt.Println("    wizado               Launch Steam (with license check)")
+	fmt.Println("    wizado               Open TUI menu (launch Steam from there)")
 	fmt.Println("    wizado config        Configure settings & license via TUI")
 	fmt.Println("    wizado setup         Run this setup again")
 	fmt.Println("    wizado info          Display system information")

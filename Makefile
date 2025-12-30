@@ -14,12 +14,10 @@ build:
 install: build
 	@echo "Cleaning up previous installation..."
 	@rm -f /usr/bin/$(BINARY) 2>/dev/null || true
-	@rm -f /usr/bin/wizado-menu 2>/dev/null || true
 	@rm -f /usr/bin/wizado-menu-float 2>/dev/null || true
 	@rm -rf /usr/share/$(BINARY) 2>/dev/null || true
 	@echo "Installing $(BINARY) v$(VERSION)..."
 	install -Dm755 $(BINARY) /usr/bin/$(BINARY)
-	install -Dm755 scripts/bin/wizado-menu /usr/bin/wizado-menu
 	install -Dm755 scripts/bin/wizado-menu-float /usr/bin/wizado-menu-float
 	install -Dm644 scripts/config/default.conf /usr/share/$(BINARY)/default.conf
 	install -Dm644 scripts/config/waybar-module.jsonc /usr/share/$(BINARY)/waybar-module.jsonc
@@ -29,7 +27,6 @@ install: build
 uninstall:
 	@echo "Removing $(BINARY)..."
 	@rm -f /usr/bin/$(BINARY)
-	@rm -f /usr/bin/wizado-menu
 	@rm -f /usr/bin/wizado-menu-float
 	@rm -rf /usr/share/$(BINARY)
 	@echo "Uninstall complete"

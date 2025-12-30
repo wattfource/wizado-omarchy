@@ -114,38 +114,34 @@ func runLaunch(cmd *cobra.Command, args []string) {
 	log := logging.WithComponent("main")
 	log.Info("Wizado launch initiated")
 	
-	// Collect system info for telemetry
-	sysInfo := launcher.CollectSystemInfo(Version)
+	// Always show TUI first - let user choose what to do
+	log.Info("Launching TUI menu")
+	launchSteam, err := tui.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		log.Errorf("TUI error: %v", err)
+		os.Exit(1)
+	}
 	
-	// Check license
+	// User chose to exit without launching Steam
+	if !launchSteam {
+		log.Info("User exited without launching Steam")
+		os.Exit(0)
+	}
+	
+	// User selected "Launch Steam" - now check license
+	log.Info("User selected Launch Steam, checking license")
 	result := license.Check()
-	
 	if result.Status != license.StatusValid && result.Status != license.StatusOfflineGrace {
-		log.Info("License check failed, launching TUI")
-		
-		// Need license - run TUI
-		launchSteam, err := tui.Run()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			log.Errorf("TUI error: %v", err)
-			os.Exit(1)
-		}
-		
-		if !launchSteam {
-			log.Info("User cancelled launch")
-			os.Exit(0)
-		}
-		
-		// Re-check license after TUI
-		result = license.Check()
-		if result.Status != license.StatusValid && result.Status != license.StatusOfflineGrace {
-			fmt.Fprintln(os.Stderr, "License required to launch Steam")
-			log.Error("License required after TUI")
-			os.Exit(1)
-		}
+		fmt.Fprintln(os.Stderr, "License required to launch Steam")
+		log.Error("License required to launch Steam")
+		os.Exit(1)
 	}
 	
 	log.Info("License valid, proceeding with launch")
+	
+	// Collect system info for telemetry
+	sysInfo := launcher.CollectSystemInfo(Version)
 	
 	// Load config and launch
 	cfg, err := config.Load()

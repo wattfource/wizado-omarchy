@@ -14,8 +14,7 @@ optdepends=(
   'gamemode: CPU/GPU performance optimizations'
   'mangohud: Performance overlay'
   'hyprland: Hyprland compositor'
-  'gum: Interactive TUI menu scripts'
-  'jq: JSON parsing for menu scripts'
+  'jq: JSON parsing for status output'
 )
 install="${pkgname}.install"
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/wattfource/wizado-omarchy/archive/refs/tags/v${pkgver}.tar.gz")
@@ -38,8 +37,7 @@ package() {
   # Install the main binary
   install -Dm755 wizado "${pkgdir}/usr/bin/wizado"
   
-  # Install helper scripts
-  install -Dm755 scripts/bin/wizado-menu "${pkgdir}/usr/bin/wizado-menu"
+  # Install helper script for floating terminal launch
   install -Dm755 scripts/bin/wizado-menu-float "${pkgdir}/usr/bin/wizado-menu-float"
   
   # Install default config

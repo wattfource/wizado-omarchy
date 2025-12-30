@@ -99,7 +99,7 @@ main() {
   echo ""
   echo "  Next steps:"
   echo "    wizado setup      # Configure system (install deps, keybinds)"
-  echo "    wizado config     # Enter license and configure settings"
+  echo "    wizado            # Open TUI menu (activate license, launch Steam)"
   echo ""
   echo "  License required: \$10 for 5 machines at https://wizado.app"
   echo ""

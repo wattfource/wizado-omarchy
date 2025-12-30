@@ -15,6 +15,9 @@ const (
 	ScreenLicenseEntry
 	ScreenLicenseStatus
 	ScreenSettings
+	ScreenSystemInfo
+	ScreenLogs
+	ScreenUninstall
 )
 
 // Colors
@@ -90,6 +93,15 @@ type Model struct {
 	// Settings
 	settings     *SettingsModel
 	
+	// System Info
+	sysInfo      *SystemInfoModel
+	
+	// Logs
+	logsModel    *LogsModel
+	
+	// Uninstall
+	uninstallModel *UninstallModel
+	
 	// Should quit
 	quitting     bool
 	
@@ -115,6 +127,9 @@ func NewModel() Model {
 			"Launch Steam",
 			"License",
 			"Settings",
+			"System Info",
+			"Logs",
+			"Uninstall",
 			"Exit",
 		},
 		emailInput:   emailInput,
@@ -168,6 +183,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateLicenseStatus(msg)
 	case ScreenSettings:
 		return m.updateSettings(msg)
+	case ScreenSystemInfo:
+		return m.updateSystemInfo(msg)
+	case ScreenLogs:
+		return m.updateLogs(msg)
+	case ScreenUninstall:
+		return m.updateUninstall(msg)
 	}
 	
 	return m, nil
@@ -188,6 +209,12 @@ func (m Model) View() string {
 		return m.viewLicenseStatus()
 	case ScreenSettings:
 		return m.viewSettings()
+	case ScreenSystemInfo:
+		return m.viewSystemInfo()
+	case ScreenLogs:
+		return m.viewLogs()
+	case ScreenUninstall:
+		return m.viewUninstall()
 	}
 	
 	return ""

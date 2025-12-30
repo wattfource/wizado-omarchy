@@ -722,7 +722,7 @@ func configureWaybar(opts Options) error {
 			out, cmdErr = cmd.Output()
 		} else {
 			// Add new module to modules-right first
-			cmd := exec.Command("jq", `if .["modules-right"] then .["modules-right"] = ["custom/wizado"] + .["modules-right"] else . end`, configPath)
+		cmd := exec.Command("jq", `if .["modules-right"] then .["modules-right"] = ["custom/wizado"] + .["modules-right"] else . end`, configPath)
 			out, cmdErr = cmd.Output()
 		}
 		
@@ -746,7 +746,7 @@ func configureWaybar(opts Options) error {
 					if moduleExists {
 						fmt.Println("✓ Updated wizado module in waybar config")
 					} else {
-						fmt.Println("✓ Added wizado module to waybar config")
+					fmt.Println("✓ Added wizado module to waybar config")
 					}
 					
 					// Restart waybar
@@ -767,9 +767,9 @@ func configureWaybar(opts Options) error {
 		fmt.Println(`    "on-click": "wizado-menu-float",`)
 		fmt.Println(`    "on-click-right": "wizado-menu-float",`)
 	} else {
-		fmt.Println("Could not automatically add waybar module.")
-		fmt.Println("Add the following to your waybar config:")
-		fmt.Println(moduleJSON)
+	fmt.Println("Could not automatically add waybar module.")
+	fmt.Println("Add the following to your waybar config:")
+	fmt.Println(moduleJSON)
 	}
 	
 	return nil
@@ -822,8 +822,7 @@ func printSuccess(gpu GPUInfo, sysInfo *sysinfo.SystemInfo) {
 	fmt.Println("    Super + Shift + Q    Force-quit Steam")
 	fmt.Println()
 	fmt.Println("  Commands:")
-	fmt.Println("    wizado               Open TUI menu (launch Steam from there)")
-	fmt.Println("    wizado config        Configure settings & license via TUI")
+	fmt.Println("    wizado               Open TUI menu")
 	fmt.Println("    wizado setup         Run this setup again")
 	fmt.Println("    wizado info          Display system information")
 	fmt.Println()

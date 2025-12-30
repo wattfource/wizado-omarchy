@@ -71,8 +71,7 @@ On first launch, you'll be prompted to enter your email and license key.
 
 | Command | Action |
 |---------|--------|
-| `wizado` | Open TUI menu (launch Steam from there) |
-| `wizado config` | Configure settings & license via TUI |
+| `wizado` | Open TUI menu |
 | `wizado setup` | Install dependencies and configure system |
 | `wizado info` | Display system information and diagnostics |
 | `wizado info --json` | Output system info as JSON |

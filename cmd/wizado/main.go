@@ -46,13 +46,6 @@ License required: $10 for 5 machines at https://wizado.app`,
 		Run:     runLaunch,
 	}
 
-	// Config command
-	configCmd := &cobra.Command{
-		Use:   "config",
-		Short: "Open settings and license configuration",
-		Run:   runConfig,
-	}
-
 	// Setup command
 	setupCmd := &cobra.Command{
 		Use:   "setup",
@@ -103,7 +96,7 @@ License required: $10 for 5 machines at https://wizado.app`,
 	logsCmd.Flags().Bool("session", false, "View latest session log")
 	logsCmd.Flags().Bool("clear", false, "Clear all logs")
 
-	rootCmd.AddCommand(configCmd, setupCmd, statusCmd, activateCmd, removeCmd, infoCmd, logsCmd)
+	rootCmd.AddCommand(setupCmd, statusCmd, activateCmd, removeCmd, infoCmd, logsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -116,26 +109,26 @@ func runLaunch(cmd *cobra.Command, args []string) {
 	
 	// Always show TUI first - let user choose what to do
 	log.Info("Launching TUI menu")
-	launchSteam, err := tui.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		log.Errorf("TUI error: %v", err)
-		os.Exit(1)
-	}
-	
+		launchSteam, err := tui.Run()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			log.Errorf("TUI error: %v", err)
+			os.Exit(1)
+		}
+		
 	// User chose to exit without launching Steam
-	if !launchSteam {
+		if !launchSteam {
 		log.Info("User exited without launching Steam")
-		os.Exit(0)
-	}
-	
+			os.Exit(0)
+		}
+		
 	// User selected "Launch Steam" - now check license
 	log.Info("User selected Launch Steam, checking license")
 	result := license.Check()
-	if result.Status != license.StatusValid && result.Status != license.StatusOfflineGrace {
-		fmt.Fprintln(os.Stderr, "License required to launch Steam")
+		if result.Status != license.StatusValid && result.Status != license.StatusOfflineGrace {
+			fmt.Fprintln(os.Stderr, "License required to launch Steam")
 		log.Error("License required to launch Steam")
-		os.Exit(1)
+			os.Exit(1)
 	}
 	
 	log.Info("License valid, proceeding with launch")
@@ -165,27 +158,6 @@ func runLaunch(cmd *cobra.Command, args []string) {
 		log.Errorf("Launch failed: %v", err)
 		telemetry.RecordError("launcher", err.Error(), nil)
 		os.Exit(1)
-	}
-}
-
-func runConfig(cmd *cobra.Command, args []string) {
-	launchSteam, err := tui.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	
-	// If user selected "Launch Steam", launch it
-	if launchSteam {
-		cfg, err := config.Load()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
-			os.Exit(1)
-		}
-		if err := launcher.Launch(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "Launch failed: %v\n", err)
-			os.Exit(1)
-		}
 	}
 }
 

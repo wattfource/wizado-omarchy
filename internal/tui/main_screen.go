@@ -63,7 +63,30 @@ func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.screen = ScreenSettings
 		return m, nil
 		
-	case 3: // Exit
+	case 3: // System Info
+		m.screen = ScreenSystemInfo
+		if m.sysInfo == nil {
+			m.sysInfo = NewSystemInfoModel()
+		}
+		m.sysInfo.Load("1.0.1") // TODO: pass actual version
+		return m, nil
+		
+	case 4: // Logs
+		m.screen = ScreenLogs
+		if m.logsModel == nil {
+			m.logsModel = NewLogsModel()
+		}
+		m.logsModel.Load()
+		return m, nil
+		
+	case 5: // Uninstall
+		m.screen = ScreenUninstall
+		if m.uninstallModel == nil {
+			m.uninstallModel = NewUninstallModel()
+		}
+		return m, nil
+		
+	case 6: // Exit
 		m.quitting = true
 		return m, tea.Quit
 	}

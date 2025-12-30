@@ -685,7 +685,7 @@ func configureWaybar(opts Options) error {
 	fmt.Printf("Using waybar config: %s\n", configPath)
 	
 	if opts.DryRun {
-		fmt.Println("[DRY RUN] Would add wizado module to waybar")
+		fmt.Println("[DRY RUN] Would configure wizado module in waybar")
 		return nil
 	}
 	
@@ -696,15 +696,9 @@ func configureWaybar(opts Options) error {
 	}
 	
 	content := string(data)
+	moduleExists := strings.Contains(content, `"custom/wizado"`)
 	
-	// Check if module already exists
-	if strings.Contains(content, `"custom/wizado"`) {
-		fmt.Println("✓ Wizado module already exists in waybar config")
-		return nil
-	}
-	
-	// Try to add module using jq
-	// Note: on-click uses wizado-menu-float to spawn a terminal for the TUI
+	// Module definition - on-click uses wizado-menu-float to spawn a terminal for the TUI
 	moduleJSON := `{
     "custom/wizado": {
         "format": "{}",
@@ -717,15 +711,25 @@ func configureWaybar(opts Options) error {
     }
 }`
 	
-	// Try jq approach
+	// Try jq approach for both adding and updating
 	if _, err := exec.LookPath("jq"); err == nil {
-		// First add to modules-right
-		cmd := exec.Command("jq", `if .["modules-right"] then .["modules-right"] = ["custom/wizado"] + .["modules-right"] else . end`, configPath)
-		out, err := cmd.Output()
-		if err == nil {
-			// Then add the module definition
+		var out []byte
+		var cmdErr error
+		
+		if moduleExists {
+			// Update existing module with correct on-click handlers
+			cmd := exec.Command("jq", `.["custom/wizado"]["on-click"] = "wizado-menu-float" | .["custom/wizado"]["on-click-right"] = "wizado-menu-float"`, configPath)
+			out, cmdErr = cmd.Output()
+		} else {
+			// Add new module to modules-right first
+			cmd := exec.Command("jq", `if .["modules-right"] then .["modules-right"] = ["custom/wizado"] + .["modules-right"] else . end`, configPath)
+			out, cmdErr = cmd.Output()
+		}
+		
+		if cmdErr == nil {
 			var config map[string]interface{}
 			if err := json.Unmarshal(out, &config); err == nil {
+				// Always set/update the module definition with correct values
 				config["custom/wizado"] = map[string]interface{}{
 					"format":         "{}",
 					"return-type":    "json",
@@ -739,7 +743,11 @@ func configureWaybar(opts Options) error {
 				newData, err := json.MarshalIndent(config, "", "  ")
 				if err == nil {
 					os.WriteFile(configPath, newData, 0644)
-					fmt.Println("✓ Added wizado module to waybar config")
+					if moduleExists {
+						fmt.Println("✓ Updated wizado module in waybar config")
+					} else {
+						fmt.Println("✓ Added wizado module to waybar config")
+					}
 					
 					// Restart waybar
 					exec.Command("pkill", "waybar").Run()
@@ -753,9 +761,16 @@ func configureWaybar(opts Options) error {
 	}
 	
 	// Fallback: print instructions
-	fmt.Println("Could not automatically add waybar module.")
-	fmt.Println("Add the following to your waybar config:")
-	fmt.Println(moduleJSON)
+	if moduleExists {
+		fmt.Println("Could not automatically update waybar module.")
+		fmt.Println("Please update your custom/wizado module to use:")
+		fmt.Println(`    "on-click": "wizado-menu-float",`)
+		fmt.Println(`    "on-click-right": "wizado-menu-float",`)
+	} else {
+		fmt.Println("Could not automatically add waybar module.")
+		fmt.Println("Add the following to your waybar config:")
+		fmt.Println(moduleJSON)
+	}
 	
 	return nil
 }

@@ -673,8 +673,9 @@ func collectDesktop() DesktopInfo {
 func collectDependencies() DependenciesInfo {
 	info := DependenciesInfo{}
 
-	// Steam
-	info.Steam = getPackageInfo("steam", []string{"--version"})
+	// Steam - don't use --version as it launches the full client!
+	// Use pacman to get version instead
+	info.Steam = getPackageInfo("steam", nil)
 
 	// Gamescope
 	info.Gamescope = getPackageInfo("gamescope", []string{"--version"})
